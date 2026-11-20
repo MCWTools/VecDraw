@@ -18,6 +18,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('#btnLayers').onclick = () => toggleLayersPanel();
   $('#btnMenu').onclick = editorMenu;
   $('#projName').onclick = settingsDialog;
+  $('#btnAppSettings').onclick = appSettings;
   $('#zFit').onclick = fitView;
   $('#zIn').onclick = () => zoomAt(CW / 2, CH / 2, 1.4);
   $('#zOut').onclick = () => zoomAt(CW / 2, CH / 2, 1 / 1.4);

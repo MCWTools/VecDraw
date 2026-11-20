@@ -153,9 +153,6 @@ function pluginManager() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  const head = $('.home-head');
-  head.append(el('button', { class: 'pill', style: 'position:absolute;right:16px;top:22px', onclick: pluginManager }, '🧩 Plugins'));
-  head.style.position = 'relative';
   // chuột phải / bấm giữ trên card project
   $('#projectGrid').addEventListener('contextmenu', e => { const c = e.target.closest('.card'); if (c && window.homeMetas) { const m = window.homeMetas.find(x => x.id === c.dataset.id); if (m) projectMenu(m); } });
 });

@@ -491,10 +491,26 @@ function renderDocToCanvas(d, W, H, o) {
   drawScene(x, d3, [W / d.w, 0, 0, H / d.h, 0, 0], W, H, {});
   return c;
 }
+/* cài đặt app (lưu localStorage) */
+const Prefs = {
+  _d: null,
+  all() { if (!this._d) { try { this._d = JSON.parse(localStorage.getItem('vd_prefs') || '{}'); } catch (_) { this._d = {}; } } return this._d; },
+  get(k, def) { const v = this.all()[k]; return v === undefined ? def : v; },
+  set(k, v) { this.all()[k] = v; try { localStorage.setItem('vd_prefs', JSON.stringify(this._d)); } catch (_) { } }
+};
+/* layer tham chiếu (ảnh trace / background mapping): chỉ làm mờ để NHÌN, hút màu thì lấy màu thật */
+const isRefLike = L => !!(L.ref || L.trace || (L.type === 'img' && L.locked && L.name === 'Ảnh gốc'));
 function sampleColorAt(x, y) {
   const c = mkCanvas(1, 1), x2 = c.getContext('2d', { willReadFrequently: true });
   const keepOff = offC; offC = null;
-  drawScene(x2, doc, [1, 0, 0, 1, -x, -y], 1, 1, {});
+  let sd;
+  if (Prefs.get('pickLayerOnly', false)) {
+    // chỉ hút trong layer đang chọn (màu thật, không nền); chỗ layer không có gì -> null -> không đổi màu
+    const A = doc.layers.find(l => l.id === doc.active);
+    if (!A || !A.visible) { offC = keepOff; return null; }
+    sd = Object.assign({}, doc, { bg: null, layers: [Object.assign({}, A, { opacity: 1, blend: 'source-over', blur: 0 })] });
+  } else sd = Object.assign({}, doc, { layers: doc.layers.map(L => isRefLike(L) ? Object.assign({}, L, { opacity: 1, blend: 'source-over', blur: 0 }) : L) });
+  drawScene(x2, sd, [1, 0, 0, 1, -x, -y], 1, 1, {});
   offC = keepOff;
   const d = x2.getImageData(0, 0, 1, 1).data;
   return d[3] < 8 ? null : rgb2hex(d[0], d[1], d[2]);
@@ -662,6 +678,7 @@ async function serLayers(list) {
   for (const l of list) {
     if (l.ref) continue;
     const o = { id: l.id, name: l.name, type: l.type, visible: l.visible, locked: l.locked, opacity: l.opacity, blend: l.blend, blur: l.blur };
+    if (l.trace) o.trace = true;
     if (l.type === 'vec') o.shapes = l.shapes;
     else if (l.type === 'img') { o.src = srcOf(l); o.corners = l.corners; o.smooth = l.smooth; o.iw = l.iw; o.ih = l.ih; }
     else { if (!l._png || l._pngRev !== l.rev) { l._png = await canvasToDataURL(l.canvas); l._pngRev = l.rev; } o.png = l._png; }
@@ -683,6 +700,7 @@ async function desLayers(arr, d) {
   const out = [];
   for (const s of arr) {
     const l = { id: s.id || uid(), name: s.name, type: s.type, visible: s.visible !== false, locked: !!s.locked, opacity: s.opacity == null ? 1 : s.opacity, blend: s.blend || 'source-over', blur: s.blur || 0, rev: ++REV };
+    if (s.trace) l.trace = true;
     if (s.type === 'vec') { l.shapes = (s.shapes || []).map(sh => Object.assign({ id: uid(), closed: false, mode: 'line', color: '#000000', grad: false, color2: '#ffffff', gAngle: 0, width: 4, opacity: 1, brush: 'pen', seed: 1 }, sh)); }
     else if (s.type === 'img') { l.src = s.src; l.img = await loadImage(s.src); l.iw = s.iw || l.img.naturalWidth; l.ih = s.ih || l.img.naturalHeight; l.corners = s.corners; l.smooth = s.smooth !== false; }
     else { l.canvas = mkCanvas(d.w, d.h); if (s.png) { const im = await loadImage(s.png); l.canvas.getContext('2d').drawImage(im, 0, 0); } l._png = s.png; l._pngRev = l.rev; }

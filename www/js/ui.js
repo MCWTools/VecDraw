@@ -426,8 +426,8 @@ async function traceFromImage(file) {
     const iw = im.naturalWidth || 512, ih = im.naturalHeight || 512, k = 1024 / Math.max(iw, ih), W = Math.round(iw * k), H = Math.round(ih * k);
     const d = newDoc({ name: 'Trace ' + file.name.replace(/\.[^.]+$/, ''), type: 'vector', w: W, h: H });
     const L = newLayer(d, 'img', 'Ảnh gốc'); L.img = im; L.src = src; L.iw = iw; L.ih = ih; L.smooth = !(iw <= 128 && ih <= 128);
-    L.corners = [[0, 0], [W, 0], [W, H], [0, H]]; L.opacity = 0.55; L.locked = true; d.layers.unshift(L);
-    doc = d; await saveNow(); startEditor(d); toast('Ảnh nằm ở layer dưới (đã khoá). Chấm điểm để vẽ vector lên trên!', 3800);
+    L.corners = [[0, 0], [W, 0], [W, H], [0, H]]; L.opacity = 0.55; L.locked = true; L.trace = true; d.layers.unshift(L);
+    doc = d; await saveNow(); startEditor(d); toast('Ảnh nằm ở layer dưới (mờ, đã khoá) — hút màu vẫn lấy đúng màu gốc. Chấm điểm để vẽ vector lên trên!', 4200);
   } catch (e) { toast('Không mở được ảnh: ' + e.message); }
 }
 async function importImageFlow() {
@@ -500,6 +500,22 @@ async function saveProjectFile() {
   await Native.saveBlob(safeName(doc.name) + '.vdraw', new Blob([JSON.stringify(data)], { type: 'application/json' }));
 }
 
+/* ---------------- cài đặt app (main menu) ---------------- */
+function chkRow(label, desc, get, set) {
+  const cb = el('input', { type: 'checkbox' }); cb.checked = !!get();
+  cb.addEventListener('change', () => set(cb.checked));
+  return el('label', { class: 'chkrow' }, cb, el('span', { class: 'ct' }, el('b', null, label), desc ? el('small', null, desc) : null));
+}
+function appSettings() {
+  const list = el('div', { class: 'setlist' },
+    el('div', { class: 'setsec' }, 'Hút màu'),
+    chkRow('Hút màu từ layer hiện tại', 'Bật: chỉ layer đang chọn mới được hút (màu thật). Chỗ layer đó trống thì không hút, màu giữ nguyên. Tắt: hút màu theo cả ảnh đang thấy.', () => Prefs.get('pickLayerOnly', false), v => Prefs.set('pickLayerOnly', v)),
+    el('div', { class: 'setsec' }, 'Mở rộng'),
+    el('button', { class: 'btn', onclick: () => { if (typeof pluginManager === 'function') pluginManager(); } }, '🧩 Quản lý Plugins'),
+    el('div', { class: 'setsec' }, 'Thông tin'),
+    el('div', { class: 'note' }, 'VecDraw · dữ liệu project lưu ngay trong máy. Xuất file .vdraw từ menu ⋯ của project để sao lưu.'));
+  openModal('Cài đặt', list, [{ label: 'Xong', kind: 'primary' }], { cls: 'setmodal' });
+}
 /* ---------------- project settings ---------------- */
 function settingsDialog() {
   const isV = doc.type === 'vector';
