@@ -352,7 +352,7 @@ const selectTool = {
       segs(s.nodes, s.closed).forEach((g, i) => { const a = toScr(g.a[0], g.a[1]), b = toScr(g.b[0], g.b[1]); if (!i) path.moveTo(a[0], a[1]); if (g.straight) path.lineTo(b[0], b[1]); else { const c1 = toScr(g.c1[0], g.c1[1]), c2 = toScr(g.c2[0], g.c2[1]); path.bezierCurveTo(c1[0], c1[1], c2[0], c2[1], b[0], b[1]); } });
       c.lineWidth = 1.5; c.strokeStyle = 'rgba(91,140,255,.9)'; c.stroke(path);
       s.nodes.forEach((n, i) => {
-        const q = toScr(n[0], n[1]); c.fillStyle = i === sel.ni ? '#5b8cff' : '#fff'; c.strokeStyle = '#2b4fb8'; c.lineWidth = 1.6;
+        const q = toScr(n[0], n[1]); const cur = i === sel.ni; c.fillStyle = cur ? 'rgba(91,140,255,.85)' : 'rgba(255,255,255,.32)'; c.strokeStyle = cur ? '#2b4fb8' : 'rgba(43,79,184,.6)'; c.lineWidth = 1.6;
         c.beginPath(); if (n[2]) c.rect(q[0] - 6, q[1] - 6, 12, 12); else c.arc(q[0], q[1], 6.5, 0, 6.283); c.fill(); c.stroke();
       });
     } else {
@@ -640,8 +640,67 @@ function floodFill(px, py) {
   rasterOp(L, { x0, y0, x1: x1 + 1, y1: y1 + 1 }, x => { x.globalAlpha = ST.opacity; x.drawImage(tc, x0, y0); });
   requestRender();
 }
+/* Fill vector: chạm vào vùng TRỐNG được khép kín bởi các nét vẽ -> tạo hình tô kín nằm sau các nét.
+   Chạm trúng 1 hình có sẵn -> đổi màu hình đó. Khe hở nhỏ giữa các nét được bỏ qua (cỡ khe chỉnh ở thanh tuỳ chọn). */
+const VF = { gap: 3 };
+function fillRegionAt(p) {
+  const L = activeLayer(); if (!L || L.type !== 'vec') { toast('Chọn 1 layer vector để tô'); return; }
+  if (!checkEditable(L)) return;
+  const S = Math.min(1, 1400 / Math.max(doc.w, doc.h)), W = Math.max(2, Math.round(doc.w * S)), H = Math.max(2, Math.round(doc.h * S));
+  const cvs = mkCanvas(W, H), cx = cvs.getContext('2d', { willReadFrequently: true });
+  const keepOff = offC; offC = null;
+  const sd = Object.assign({}, doc, { bg: null, layers: doc.layers.filter(l => l.type === 'vec' && l.visible && !isRefLike(l)).map(l => Object.assign({}, l, { opacity: 1, blend: 'source-over', blur: 0 })) });
+  drawScene(cx, sd, [S, 0, 0, S, 0, 0], W, H, {}); offC = keepOff;
+  const a = cx.getImageData(0, 0, W, H).data, wall = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) wall[i] = a[i * 4 + 3] > 24 ? 1 : 0;
+  const R = Math.round(VF.gap * S);   // làm dày nét để bít khe hở
+  const dil = (src, r) => {
+    if (r <= 0) return src;
+    const tmp = new Uint8Array(W * H), out = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) { let last = -1e9; for (let x = 0; x < W; x++) { if (src[y * W + x]) last = x; if (x - last <= r) tmp[y * W + x] = 1; } last = 1e9; for (let x = W - 1; x >= 0; x--) { if (src[y * W + x]) last = x; if (last - x <= r) tmp[y * W + x] = 1; } }
+    for (let x = 0; x < W; x++) { let last = -1e9; for (let y = 0; y < H; y++) { if (tmp[y * W + x]) last = y; if (y - last <= r) out[y * W + x] = 1; } last = 1e9; for (let y = H - 1; y >= 0; y--) { if (tmp[y * W + x]) last = y; if (last - y <= r) out[y * W + x] = 1; } }
+    return out;
+  };
+  const walls = dil(wall, R);
+  const px = Math.floor(p.x * S), py = Math.floor(p.y * S);
+  if (px < 0 || py < 0 || px >= W || py >= H) return;
+  if (walls[py * W + px]) { toast('Chạm vào chỗ trống trong vùng kín'); return; }
+  const mask = new Uint8Array(W * H), stack = [px, py]; let touchEdge = false;
+  while (stack.length) {
+    const y = stack.pop(), x = stack.pop(); if (mask[y * W + x] || walls[y * W + x]) continue;
+    let xl = x, xr = x; while (xl > 0 && !mask[y * W + xl - 1] && !walls[y * W + xl - 1]) xl--; while (xr < W - 1 && !mask[y * W + xr + 1] && !walls[y * W + xr + 1]) xr++;
+    for (let k = xl; k <= xr; k++) mask[y * W + k] = 1;
+    if (xl === 0 || xr === W - 1 || y === 0 || y === H - 1) touchEdge = true;
+    for (const ny of [y - 1, y + 1]) { if (ny < 0 || ny >= H) continue; let ins = false; for (let k = xl; k <= xr; k++) { const ok = !mask[ny * W + k] && !walls[ny * W + k]; if (ok && !ins) { stack.push(k, ny); ins = true; } else if (!ok) ins = false; } }
+  }
+  if (touchEdge && !confirmLeak()) return;
+  const m2 = dil(mask, R + 1);   // nở ra để chui dưới nét
+  // lần theo biên ngoài (Moore) trên lưới có viền 1px
+  const GW = W + 2, g = (x, y) => (x >= 0 && y >= 0 && x < W && y < H && m2[y * W + x]) ? 1 : 0;
+  let sx = -1, sy = -1; outer: for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (g(x, y)) { sx = x; sy = y; break outer; }
+  if (sx < 0) return;
+  const D = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const pts = []; let cxp = sx, cyp = sy, dir = 6, guard = 0;
+  do {
+    pts.push([cxp, cyp]);
+    let found = false;
+    for (let k = 0; k < 8; k++) { const d = (dir + 6 + k) % 8, nx = cxp + D[d][0], ny = cyp + D[d][1]; if (g(nx, ny)) { cxp = nx; cyp = ny; dir = d; found = true; break; } }
+    if (!found) break;
+  } while ((cxp !== sx || cyp !== sy) && ++guard < W * H * 4);
+  if (pts.length < 3) { toast('Vùng quá nhỏ'); return; }
+  const idx = rdpIdx(pts, 0.9), nodes = idx.map(i => [(pts[i][0] + 0.5) / S, (pts[i][1] + 0.5) / S, ST.curve ? 0 : 1]);
+  if (nodes.length < 3) return;
+  const fs = newShape(nodes, true); fs.mode = 'fill';
+  withHist(() => {
+    let mz = Infinity; for (const q of L.shapes) if (q.z < mz) mz = q.z;
+    fs.z = isFinite(mz) ? mz - 1 : nextZ();
+    L.shapes = L.shapes.concat([fs]).sort((u, v) => u.z - v.z); touch(L);
+  });
+  requestRender(); toast('Đã tô vùng');
+}
+function confirmLeak() { toast('Vùng chưa kín (hở ra ngoài) — tăng "Khe hở" hoặc nối nét lại'); return false; }
 function recolorAt(p) {
-  const hit = pickAt(p); if (!hit || !hit.s) { toast('Chạm vào 1 hình vector để đổi màu'); return; }
+  const hit = pickAt(p); if (!hit || !hit.s) { fillRegionAt(p); return; }
   const s = hit.s, ns = Object.assign({}, s, { color: ST.color });
   withHist(() => { hit.L.shapes = hit.L.shapes.map(q => q === s ? ns : q); touch(hit.L); }); requestRender();
 }

@@ -3,7 +3,7 @@
    VecDraw – UI: dialogs, home, toolbar, options, layers, color picker, export/import
    ========================================================= */
 const TOOL_DEFS = {
-  vector: [['select', 'select', 'Chọn'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['bucket', 'bucket', 'Đổi màu'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']],
+  vector: [['select', 'select', 'Chọn'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['bucket', 'bucket', 'Fill'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']],
   raster: [['select', 'select', 'Transform'], ['brush', 'brush', 'Cọ'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['smudge', 'smudge', 'Nhoè màu'], ['blur', 'blur', 'Blur'], ['bucket', 'bucket', 'Đổ màu'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']]
 }
   ; for (const k in TOOL_DEFS) TOOL_DEFS[k] = TOOL_DEFS[k].map(a => ({ id: a[0], icon: a[1], label: a[2] }));
@@ -82,8 +82,8 @@ function buildOptions() {
   const shapeControls = (isPoly) => {
     const brushMode = tool === 'free' && !useSel && ST.fmode === 'brush', modeNow = brushMode ? 'line' : G('mode');
     if (tool === 'free' && !useSel) {
-      const bk = el('button', { class: 'colorbtn bucketbtn' + (ST.mode === 'fill' ? ' on' : ''), title: 'Fill (tô kín)', onclick: () => { ST.mode = ST.mode === 'fill' ? 'line' : 'fill'; buildOptions(); }, html: ic('bucket') });
-      add(O.seg([['lasso', 'Lasso'], ['brush', 'Brush']], () => ST.fmode, v => { ST.fmode = v; buildOptions(); }), ...(brushMode ? [] : [bk]),
+      const bk = null;
+      add(O.seg([['lasso', 'Lasso'], ['brush', 'Brush']], () => ST.fmode, v => { ST.fmode = v; buildOptions(); }), ...(brushMode ? [] : [O.seg([['fill', 'Tô kín'], ['line', 'Chỉ viền']], () => ST.mode, v => { ST.mode = v; buildOptions(); })]),
         O.color(() => G('color'), v => S('color', v), 'Màu', { get: () => G('opacity'), set: v => S('opacity', v) }),
         gradBtn({ get: G, set: S, valid: () => !selShape() }, buildOptions));
     } else
@@ -132,11 +132,16 @@ function buildOptions() {
   else if (tool === 'smudge') { add(O.slider('Cỡ', 4, 300, 1, () => RS.sSize, v => RS.sSize = v), O.slider('Lực', 5, 100, 1, () => Math.round(RS.sStr * 100), v => RS.sStr = v / 100, v => v + '%')); add(O.note('Kéo để trộn / làm nhoè màu giữa các vùng.')); }
   else if (tool === 'blur') { add(O.slider('Cỡ', 4, 300, 1, () => RS.bSize, v => RS.bSize = v), O.slider('Lực', 5, 100, 1, () => Math.round(RS.bStr * 100), v => RS.bStr = v / 100, v => v + '%')); }
   else if (tool === 'bucket') {
-    add(O.color(() => ST.color, v => { ST.color = v; }, 'Màu'));
     if (doc.type === 'raster') {
+      add(O.color(() => ST.color, v => { ST.color = v; }, 'Màu'));
       add(O.slider('Dung sai', 0, 100, 1, () => RS.tol, v => RS.tol = v), O.slider('Trong suốt', 5, 100, 1, () => Math.round(ST.opacity * 100), v => ST.opacity = v / 100, v => v + '%'));
       add(O.toggle('Liền vùng', () => RS.contig, v => RS.contig = v), O.toggle('Lấy mẫu mọi layer', () => RS.all, v => RS.all = v));
-    } else add(O.note('Chạm vào hình vector để đổi sang màu này.'));
+    } else {
+      add(O.color(() => ST.color, v => { ST.color = v; }, 'Màu', { get: () => ST.opacity, set: v => ST.opacity = v }),
+        gradBtn({ get: k => ST[k], set: (k, v) => { ST[k] = v; }, valid: () => true }, buildOptions));
+      add(O.slider('Trong suốt', 5, 100, 1, () => Math.round(ST.opacity * 100), v => ST.opacity = v / 100, v => v + '%'));
+      add(O.slider('Bo góc', 0, clamp(Math.round(Math.min(doc.w, doc.h) / 4), 20, 300), 1, () => ST.round || 0, v => ST.round = v, v => v ? v + 'px' : 'Tắt'), O.toggle('Cong mượt', () => ST.curve, v => { ST.curve = v; }));
+      add(O.slider('Khe hở', 0, 14, 1, () => VF.gap, v => VF.gap = v, v => v + 'px')); add(O.note('Chạm vào vùng trống khép kín bởi nét vẽ = tô vùng đó thành 1 đa giác bình thường (nằm sau nét, chọn lại để sửa điểm/màu). Chạm vào hình có sẵn = đổi sang màu này.')); }
   }
   else if (tool === 'eyedrop') add(O.color(() => ST.color, v => { ST.color = v; }, 'Màu'), O.note('Chạm / kéo trên canvas để hút màu.'));
   else if (tool === 'hand') add(O.note('Kéo để di chuyển canvas. (2 ngón: zoom + di chuyển ở mọi tool)'));
