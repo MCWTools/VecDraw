@@ -1,0 +1,20 @@
+{
+  "name": "vecdraw",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VecDraw - vector & normal drawing app (Capacitor Android)",
+  "scripts": {
+    "serve": "npx http-server www -p 8080 -c-1",
+    "sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/filesystem": "^7.0.0",
+    "@capacitor/share": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#14151a">
+<meta name="mobile-web-app-capable" content="yes">
+<title>VecDraw</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="home" class="screen">
+  <div class="home-head"><div class="logo">VecDraw</div><div class="sub">Vector &amp; Normal drawing</div></div>
+  <div class="home-actions">
+    <button class="big primary" id="btnNewVec"><span data-i="vec"></span><b>Vector project</b><small>Chấm điểm → tự nối thành hình</small></button>
+    <button class="big" id="btnNewRas"><span data-i="ras"></span><b>Normal project</b><small>Cọ, tẩy, blur, nhoè màu…</small></button>
+    <button class="big" id="btnTrace"><span data-i="image"></span><b>Trace ảnh</b><small>Vẽ vector đè lên ảnh pixel</small></button>
+    <button class="big" id="btnOpenFile"><span data-i="upload"></span><b>Mở file</b><small>.vdraw hoặc ảnh</small></button>
+  </div>
+  <div class="section-title">Dự án của bạn</div>
+  <div id="projectGrid" class="grid"></div>
+  <div id="emptyHint" class="empty hidden">Chưa có dự án nào. Tạo mới ở trên nhé.</div>
+</div>
+
+<div id="editor" class="screen hidden">
+  <header id="topbar">
+    <button class="ib" id="btnHome" data-i="home" title="Menu chính"></button>
+    <div id="projName" class="pname"></div>
+    <span id="saveState" class="savestate"></span>
+    <div class="spacer"></div>
+    <button class="ib" id="btnUndo" data-i="undo" title="Undo"></button>
+    <button class="ib" id="btnRedo" data-i="redo" title="Redo"></button>
+    <button class="ib" id="btnLayers" data-i="layers" title="Layers"></button>
+    <button class="ib" id="btnMenu" data-i="menu" title="Menu"></button>
+  </header>
+  <div id="mapTabs" class="hidden"></div>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <div id="pendBar" class="floatbar hidden"></div>
+    <div id="selBar" class="floatbar hidden"></div>
+    <div id="zoomBox">
+      <button class="ib sm" id="zOut" data-i="minus"></button>
+      <span id="zLabel">100%</span>
+      <button class="ib sm" id="zIn" data-i="plus"></button>
+      <button class="ib sm" id="zFit" data-i="fit"></button>
+      <button class="ib sm" id="optToggle" data-i="down"></button>
+    </div>
+    <aside id="layersPanel" class="hidden"></aside>
+  </div>
+  <div id="optPanel"></div>
+  <nav id="toolbar"></nav>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toast"></div>
+<input type="file" id="fileInput" class="hidden">
+<script src="js/core.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/plugins.js"></script>
+<script src="js/mapping.js"></script>
+<script src="js/native.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

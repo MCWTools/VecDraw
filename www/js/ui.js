@@ -1,0 +1,512 @@
+'use strict';
+/* =========================================================
+   VecDraw – UI: dialogs, home, toolbar, options, layers, color picker, export/import
+   ========================================================= */
+const TOOL_DEFS = {
+  vector: [['select', 'select', 'Chọn'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['bucket', 'bucket', 'Đổi màu'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']],
+  raster: [['select', 'select', 'Transform'], ['brush', 'brush', 'Cọ'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['smudge', 'smudge', 'Nhoè màu'], ['blur', 'blur', 'Blur'], ['bucket', 'bucket', 'Đổ màu'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']]
+}
+  ; for (const k in TOOL_DEFS) TOOL_DEFS[k] = TOOL_DEFS[k].map(a => ({ id: a[0], icon: a[1], label: a[2] }));
+
+let toastTimer = 0;
+function toast(msg, ms) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), ms || 2300);
+}
+function setSaveState(s) { const e = $('#saveState'); if (e) { e.textContent = s; e.dataset.s = s; } }
+
+/* ---------------- modal system ---------------- */
+const modalStack = [];
+function openModal(title, body, actions, opts) {
+  opts = opts || {};
+  const root = $('#modalRoot'), back = el('div', { class: 'backdrop' });
+  const close = () => { const i = modalStack.indexOf(api); if (i >= 0) modalStack.splice(i, 1); back.remove(); if (opts.onClose) opts.onClose(); };
+  const box = el('div', { class: 'modal' + (opts.cls ? ' ' + opts.cls : '') },
+    title ? el('div', { class: 'mtitle' }, title) : null,
+    el('div', { class: 'mbody' }, body),
+    actions && actions.length ? el('div', { class: 'mact' }, actions.map(a => el('button', { class: 'btn ' + (a.kind || ''), onclick: async () => { const r = a.fn ? await a.fn() : undefined; if (r !== false) close(); } }, a.label))) : null);
+  back.append(box); root.append(back);
+  back.addEventListener('pointerdown', e => { if (e.target === back && !opts.sticky) close(); });
+  const api = { close, box }; modalStack.push(api); return api;
+}
+function askConfirm(title, msg, okLabel, danger) {
+  return new Promise(res => {
+    let done = false; const fin = v => { if (!done) { done = true; res(v); } };
+    openModal(title, el('div', { class: 'msg' }, msg), [{ label: 'Huỷ', fn: () => fin(false) }, { label: okLabel || 'OK', kind: danger ? 'danger' : 'primary', fn: () => fin(true) }], { onClose: () => fin(false) });
+  });
+}
+function askText(title, value, ph) {
+  return new Promise(res => {
+    let done = false; const fin = v => { if (!done) { done = true; res(v); } };
+    const inp = el('input', { type: 'text', class: 'txt', value: value || '', placeholder: ph || '' });
+    const m = openModal(title, inp, [{ label: 'Huỷ', fn: () => fin(null) }, { label: 'OK', kind: 'primary', fn: () => fin(inp.value.trim() || null) }], { onClose: () => fin(null) });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { fin(inp.value.trim() || null); m.close(); } });
+    setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  });
+}
+function actionSheet(title, items) {
+  const list = el('div', { class: 'asheet' }, items.filter(Boolean).map(it => el('button', { class: 'arow' + (it.danger ? ' danger' : ''), onclick: () => { m.close(); setTimeout(it.fn, 30); } }, it.icon ? el('span', { class: 'ai', html: ic(it.icon) }) : null, el('span', null, it.label))));
+  const m = openModal(title, list, null, { cls: 'sheetmodal' }); return m;
+}
+
+/* ---------------- control builders ---------------- */
+const O = {
+  seg(opts, get, set) {
+    const w = el('div', { class: 'seg' }), upd = () => $$('button', w).forEach(b => b.classList.toggle('on', b.dataset.v === String(get())));
+    opts.forEach(([v, lab]) => w.append(el('button', { 'data-v': v, onclick: () => { set(v); upd(); } }, lab))); upd(); return w;
+  },
+  slider(label, min, max, step, get, set, fmt) {
+    const v = get(), out = el('span', { class: 'val' }, fmt ? fmt(v) : v), inp = el('input', { type: 'range', min, max, step, value: v });
+    inp.addEventListener('input', () => { const x = parseFloat(inp.value); out.textContent = fmt ? fmt(x) : x; set(x); });
+    return el('label', { class: 'ctl slider' }, el('span', { class: 'lab' }, label), inp, out);
+  },
+  toggle(label, get, set) {
+    const b = el('button', { class: 'pill' + (get() ? ' on' : ''), onclick: () => { const v = !get(); set(v); b.classList.toggle('on', v); } }, label); return b;
+  },
+  color(get, set, label) {
+    const sw = el('span', { class: 'sw', style: 'background:' + get() });
+    return el('button', { class: 'colorbtn', onclick: () => openColorPicker(get(), v => { set(v); sw.style.background = v; }) }, sw, label ? el('span', null, label) : null);
+  },
+  note(t) { return el('div', { class: 'note' }, t); },
+  row(...c) { return el('div', { class: 'orow' }, ...c); }
+};
+const pct = v => Math.round(v * 100) + '%';
+
+/* ---------------- options panel ---------------- */
+function buildOptions() {
+  const P = $('#optPanel'); P.innerHTML = ''; if (!doc) return;
+  const s = selShape(), useSel = tool === 'select' && s;
+  const G = k => useSel ? (k === 'curve' ? s.nodes.every(n => !n[2]) : s[k]) : ST[k];
+  const S = (k, v) => { if (useSel) editSel(k, v); else { ST[k] = v; requestRender(); } };
+  const add = (...c) => P.append(O.row(...c));
+  const shapeControls = (isPoly) => {
+    add(O.seg([['fill', 'Fill'], ['line', 'Line']], () => G('mode'), v => { S('mode', v); buildOptions(); }),
+      O.color(() => G('color'), v => S('color', v), 'Màu'),
+      O.toggle('Gradient', () => G('grad'), v => { S('grad', v); buildOptions(); }));
+    if (G('grad')) add(O.color(() => G('color2'), v => S('color2', v), 'Màu 2'), O.slider('Góc', 0, 360, 5, () => G('gAngle'), v => S('gAngle', v), v => v + '°'));
+    if (G('mode') === 'line') {
+      add(O.slider('Độ dày', 1, 150, 1, () => G('width'), v => S('width', v), v => v));
+      add(O.seg([['pen', 'Pen'], ['pencil', 'Pencil'], ['marker', 'Marker'], ['dashed', 'Đứt'], ['dotted', 'Chấm']], () => G('brush'), v => S('brush', v)));
+    }
+    add(O.slider('Trong suốt', 5, 100, 1, () => Math.round(G('opacity') * 100), v => S('opacity', v / 100), v => v + '%'));
+    const t = [];
+    if (G('mode') === 'line') t.push(O.toggle('Nối đầu-cuối', () => G('closed'), v => S('closed', v)));
+    if (isPoly) t.push(O.toggle('Cong mượt', () => useSel ? G('curve') : ST.curve, v => { if (useSel) editSel('curve', v); else ST.curve = v; }));
+    if (tool === 'free') t.push(O.seg([['auto', 'Tự động'], ['smooth', 'Mượt'], ['straight', 'Thẳng'], ['raw', 'Thô']], () => ST.free, v => { ST.free = v; }));
+    if (t.length) add(...t);
+  };
+  if (useSel) { shapeControls(true); if (s) add(O.note('Chạm đúp: vào chế độ sửa điểm · Kéo góc = resize · chấm xanh = xoay')); }
+  else if (tool === 'select') {
+    const L = activeLayer();
+    if (L && L.type === 'img') {
+      add(O.toggle('Pixel (không làm mượt)', () => !L.smooth, v => { setLayerProp(L.id, 'smooth', !v); }));
+      add(O.note('Kéo trong ảnh để di chuyển · góc = resize · chấm xanh = xoay · bật Warp ở thanh trên để kéo méo từng góc'));
+    } else add(O.note(doc.type === 'vector' ? 'Chạm vào 1 hình để chọn. Chạm đúp để sửa từng điểm.' : 'Chọn layer ảnh (import) để transform / warp.'));
+  }
+  else if (tool === 'poly') { shapeControls(true); add(O.note('Chạm để thêm điểm · kéo điểm để chỉnh · ✓ hoặc Enter để vẽ')); }
+  else if (tool === 'free') { shapeControls(false); }
+  else if (tool === 'brush') {
+    add(O.seg([['soft', 'Cọ'], ['pencil', 'Pencil'], ['air', 'Phun'], ['pixel', 'Pixel']], () => RS.style, v => { RS.style = v; buildOptions(); }), O.color(() => ST.color, v => { ST.color = v; }, 'Màu'));
+    add(O.slider('Cỡ', 1, 300, 1, () => RS.size, v => RS.size = v));
+    if (RS.style === 'soft') add(O.slider('Độ cứng', 0, 100, 1, () => Math.round(RS.hard * 100), v => RS.hard = v / 100, v => v + '%'));
+    add(O.slider('Trong suốt', 5, 100, 1, () => Math.round(RS.opacity * 100), v => RS.opacity = v / 100, v => v + '%'));
+  }
+  else if (tool === 'eraser') {
+    if (doc.type === 'vector') {
+      add(O.slider('Độ xoá', 5, 100, 5, () => Math.round(VE.strength * 100), v => VE.strength = v / 100, v => v + '%'), O.toggle('Mọi layer', () => VE.all, v => VE.all = v));
+      add(O.note('Chạm / quẹt qua hình: xoá cả hình. Độ xoá < 100% = chỉ làm mờ (hình vẫn còn).'));
+    } else {
+      add(O.slider('Cỡ', 1, 300, 1, () => RS.eSize, v => RS.eSize = v));
+      add(O.slider('Độ cứng', 0, 100, 1, () => Math.round(RS.eHard * 100), v => RS.eHard = v / 100, v => v + '%'));
+      add(O.slider('Độ xoá', 5, 100, 1, () => Math.round(RS.eOp * 100), v => RS.eOp = v / 100, v => v + '%'));
+      add(O.note('Chỉ xoá layer đang chọn, các layer dưới vẫn giữ nguyên.'));
+    }
+  }
+  else if (tool === 'smudge') { add(O.slider('Cỡ', 4, 300, 1, () => RS.sSize, v => RS.sSize = v), O.slider('Lực', 5, 100, 1, () => Math.round(RS.sStr * 100), v => RS.sStr = v / 100, v => v + '%')); add(O.note('Kéo để trộn / làm nhoè màu giữa các vùng.')); }
+  else if (tool === 'blur') { add(O.slider('Cỡ', 4, 300, 1, () => RS.bSize, v => RS.bSize = v), O.slider('Lực', 5, 100, 1, () => Math.round(RS.bStr * 100), v => RS.bStr = v / 100, v => v + '%')); }
+  else if (tool === 'bucket') {
+    add(O.color(() => ST.color, v => { ST.color = v; }, 'Màu'));
+    if (doc.type === 'raster') {
+      add(O.slider('Dung sai', 0, 100, 1, () => RS.tol, v => RS.tol = v), O.slider('Trong suốt', 5, 100, 1, () => Math.round(ST.opacity * 100), v => ST.opacity = v / 100, v => v + '%'));
+      add(O.toggle('Liền vùng', () => RS.contig, v => RS.contig = v), O.toggle('Lấy mẫu mọi layer', () => RS.all, v => RS.all = v));
+    } else add(O.note('Chạm vào hình vector để đổi sang màu này.'));
+  }
+  else if (tool === 'eyedrop') add(O.color(() => ST.color, v => { ST.color = v; }, 'Màu'), O.note('Chạm / kéo trên canvas để hút màu.'));
+  else if (tool === 'hand') add(O.note('Kéo để di chuyển canvas. (2 ngón: zoom + di chuyển ở mọi tool)'));
+}
+
+/* ---------------- toolbar / bars ---------------- */
+function buildToolbar() {
+  const T = $('#toolbar'); T.innerHTML = '';
+  TOOL_DEFS[doc.type].forEach(t => T.append(el('button', { class: 'tb' + (tool === t.id ? ' on' : ''), 'data-id': t.id, onclick: () => setTool(t.id) }, el('span', { class: 'ti', html: ic(t.icon) }), el('span', { class: 'tl' }, t.label))));
+}
+function buildPendBar() {
+  const B = $('#pendBar'), show = tool === 'poly' && pend && pend.pts.length;
+  B.classList.toggle('hidden', !show); if (!show) return;
+  B.innerHTML = '';
+  B.append(el('span', { class: 'cnt' }, pend.pts.length + ' điểm'),
+    el('button', { class: 'fb', title: 'Xoá điểm cuối', onclick: pendPop, html: ic('back') }),
+    el('button', { class: 'fb', title: 'Huỷ', onclick: cancelPending, html: ic('x') }),
+    el('button', { class: 'fb ok', title: 'Vẽ (Enter)', onclick: () => commitPending(), html: ic('check') }));
+}
+function buildSelBar() {
+  const B = $('#selBar'), t = tool === 'select' ? currentTarget() : null;
+  B.classList.toggle('hidden', !t); if (!t) return;
+  B.innerHTML = '';
+  const fb = (icon, title, fn, on) => el('button', { class: 'fb' + (on ? ' on' : ''), title, onclick: fn, html: ic(icon) });
+  if (t.kind === 'shape') {
+    B.append(el('button', { class: 'fb txt' + (sel.mode === 'box' ? ' on' : ''), onclick: () => setSelMode('box') }, 'Khung'),
+      el('button', { class: 'fb txt' + (sel.mode === 'nodes' ? ' on' : ''), onclick: () => setSelMode('nodes') }, 'Điểm'));
+    if (sel.mode === 'nodes') B.append(el('button', { class: 'fb txt', onclick: toggleNodeCorner }, 'Góc/Mượt'), el('button', { class: 'fb txt', onclick: deleteNode }, 'Xoá điểm'));
+    else B.append(fb('copy', 'Nhân đôi', duplicateSelected), fb('chevup', 'Lên trên cùng', () => reorderSelected('front')), fb('down', 'Xuống dưới cùng', () => reorderSelected('back')), fb('fliph', 'Lật ngang', () => flipSel(true)), fb('flipv', 'Lật dọc', () => flipSel(false)), el('button', { class: 'fb txt' + (XF.lock ? ' on' : ''), onclick: () => { XF.lock = !XF.lock; buildSelBar(); } }, 'Giữ tỉ lệ'));
+    B.append(fb('trash', 'Xoá hình', deleteSelected));
+  } else {
+    B.append(el('button', { class: 'fb txt' + (XF.lock ? ' on' : ''), onclick: () => { XF.lock = !XF.lock; buildSelBar(); } }, 'Giữ tỉ lệ'),
+      el('button', { class: 'fb txt' + (XF.warp ? ' on' : ''), onclick: () => { XF.warp = !XF.warp; buildSelBar(); requestRender(); } }, 'Warp'),
+      fb('fliph', 'Lật ngang', () => flipSel(true)), fb('flipv', 'Lật dọc', () => flipSel(false)), fb('rotate', 'Reset transform', resetImgTransform));
+    if (doc.type === 'raster') B.append(el('button', { class: 'fb txt', onclick: () => { rasterizeLayer(t.layer.id); toast('Đã rasterize'); } }, 'Rasterize'));
+    B.append(fb('trash', 'Xoá layer ảnh', deleteSelected));
+  }
+}
+function uiRefresh(full) {
+  if (!doc) return;
+  $('#btnUndo').disabled = !(Hist.u.length || (pend && pend.pts.length));
+  $('#btnRedo').disabled = !(Hist.r.length || (pend && pend.redo.length));
+  $$('#toolbar .tb').forEach(b => b.classList.toggle('on', b.dataset.id === tool));
+  buildPendBar(); buildSelBar(); buildMapTabs();
+  if (!sliderBusy) { if (full) buildOptions(); buildLayers(); }
+}
+let sliderBusy = false;
+document.addEventListener('pointerdown', e => { if (e.target && e.target.type === 'range') sliderBusy = true; }, true);
+['pointerup', 'pointercancel'].forEach(ev => document.addEventListener(ev, () => { sliderBusy = false; }, true));
+
+/* ---------------- layers panel ---------------- */
+function setLayerProp(id, k, v) {
+  const L = layerById(id); if (!L) return; if (L.ref) { setRefProp(k, v); return; } const before = snap(); L[k] = v; touch(L);
+  pushHist({ kind: 'doc', before, after: snap() }, 'lp:' + id + ':' + k); requestRender();
+}
+function toggleLayersPanel(force) {
+  const P = $('#layersPanel'), show = force === undefined ? P.classList.contains('hidden') : force;
+  P.classList.toggle('hidden', !show); $('#btnLayers').classList.toggle('on', show); if (show) buildLayers(); setTimeout(resizeView, 30);
+}
+function buildLayers() {
+  const P = $('#layersPanel'); if (!doc || P.classList.contains('hidden')) return;
+  P.innerHTML = '';
+  const act = activeLayer();
+  const ib = (icon, title, fn, dis) => el('button', { class: 'ib sm', title, onclick: fn, disabled: dis, html: ic(icon) });
+  P.append(el('div', { class: 'lhead' }, el('b', null, 'Layers'), el('span', { class: 'spacer' }), ib('x', 'Đóng', () => toggleLayersPanel(false))));
+  const idx = doc.layers.indexOf(act);
+  const isRef = !!(act && act.ref), below = idx > 0 ? doc.layers[idx - 1] : null;
+  P.append(el('div', { class: 'ltools' },
+    ib('plus', 'Layer mới', () => { addLayer(); }),
+    ib('image', 'Import ảnh vào layer mới', () => importImageFlow()),
+    ib('copy', 'Nhân đôi layer', () => duplicateLayer(act.id), isRef),
+    ib('mergedown', 'Gộp xuống dưới', () => mergeDown(act.id), idx <= 0 || isRef || (below && below.ref)),
+    ib('up', 'Đưa lên', () => moveLayer(act.id, 1), idx >= doc.layers.length - 1 || isRef),
+    ib('down', 'Đưa xuống', () => moveLayer(act.id, -1), idx <= 0 || isRef || (below && below.ref)),
+    ib('eraser', 'Xoá sạch nội dung layer', async () => { if (await askConfirm('Xoá sạch layer?', 'Toàn bộ nội dung layer "' + act.name + '" sẽ bị xoá (có thể Undo).', 'Xoá', true)) clearLayer(act.id); }, isRef),
+    ib('trash', 'Xoá layer', () => deleteLayer(act.id), isRef)));
+  const list = el('div', { class: 'llist' });
+  for (let i = doc.layers.length - 1; i >= 0; i--) {
+    const L = doc.layers[i];
+    const row = el('div', { class: 'lrow' + (L.id === doc.active ? ' sel' : ''), 'data-id': L.id, onclick: e => { if (e.target.closest('button,.handle')) return; doc.active = L.id; if (tool === 'select') sel = null; uiRefresh(true); requestRender(); } },
+      el('button', { class: 'ib sm' + (L.visible ? '' : ' dim'), onclick: () => { setLayerProp(L.id, 'visible', !L.visible); }, html: ic(L.visible ? 'eye' : 'eyeoff') }),
+      L.ref ? el('span', { class: 'ib sm on', title: 'Được bảo vệ', html: ic('lock') }) : el('button', { class: 'ib sm' + (L.locked ? ' on' : ' dim'), onclick: () => { setLayerProp(L.id, 'locked', !L.locked); }, html: ic(L.locked ? 'lock' : 'unlock') }),
+      el('span', { class: 'ltype', html: ic(L.type === 'vec' ? 'vec' : L.type === 'ras' ? 'ras' : 'image') }),
+      el('span', { class: 'lname' }, L.name),
+      L.ref ? el('span', { class: 'hspace' }) : el('span', { class: 'handle', title: 'Kéo để sắp xếp', html: ic('menu') }));
+    list.append(row);
+  }
+  P.append(list);
+  bindLayerDrag(list);
+  if (act && act.ref) {
+    P.append(el('div', { class: 'lprops' }, O.slider('Opacity background', 0, 100, 1, () => Math.round(act.opacity * 100), v => setRefProp('opacity', v / 100), v => v + '%'), el('div', { class: 'note' }, 'Layer tham chiếu từ texture gốc: không vẽ / xoá / di chuyển được. Ẩn hoặc đổi opacity chỉ ảnh hưởng hiển thị, không ảnh hưởng file export.')));
+  } else if (act) {
+    const nm = el('input', { type: 'text', class: 'txt', value: act.name });
+    nm.addEventListener('change', () => setLayerProp(act.id, 'name', nm.value.trim() || act.name));
+    const bl = el('select', { class: 'sel' }, BLENDS.map(([v, n]) => el('option', { value: v, selected: v === act.blend }, n)));
+    bl.addEventListener('change', () => setLayerProp(act.id, 'blend', bl.value));
+    P.append(el('div', { class: 'lprops' }, nm,
+      O.slider('Trong suốt layer', 0, 100, 1, () => Math.round(act.opacity * 100), v => setLayerProp(act.id, 'opacity', v / 100), v => v + '%'),
+      el('label', { class: 'ctl' }, el('span', { class: 'lab' }, 'Blend'), bl),
+      O.slider('Blur layer', 0, 40, 0.5, () => act.blur, v => setLayerProp(act.id, 'blur', v), v => v)));
+  }
+}
+function bindLayerDrag(list) {
+  list.addEventListener('pointerdown', e => {
+    const h = e.target.closest('.handle'); if (!h) return;
+    e.preventDefault(); const row = h.closest('.lrow'); const before = snap();
+    row.classList.add('drag'); try { h.setPointerCapture(e.pointerId); } catch (_) { }
+    const move = ev => {
+      const rows = $$('.lrow', list).filter(r => r !== row);
+      let ref = null;
+      for (const r of rows) { const b = r.getBoundingClientRect(); if (ev.clientY < b.top + b.height / 2) { ref = r; break; } }
+      if (ref) { if (row.nextSibling !== ref) list.insertBefore(row, ref); } else if (list.lastChild !== row) list.append(row);
+    };
+    const up = () => {
+      h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up);
+      row.classList.remove('drag');
+      const order = $$('.lrow', list).map(r => r.dataset.id).reverse(), map = new Map(doc.layers.map(l => [l.id, l]));
+      const nl = order.map(id => map.get(id)); const same = nl.every((l, i) => l === doc.layers[i]);
+      if (doc.layers[0] && doc.layers[0].ref && !(nl[0] && nl[0].ref)) { buildLayers(); toast('Background tham chiếu luôn nằm dưới cùng'); return; }
+      if (!same) { doc.layers = nl; pushHist({ kind: 'doc', before, after: snap() }); } else buildLayers();
+    };
+    h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
+  });
+}
+
+/* ---------------- color picker ---------------- */
+let cp = null;
+const PALETTE = ['#000000', '#444444', '#888888', '#cccccc', '#ffffff', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#5e35b1', '#d81b60', '#6d4c41', '#8bc34a', '#ffcc80'];
+function recentColors() { try { return JSON.parse(localStorage.getItem('vd_recent') || '[]'); } catch (_) { return []; } }
+function pushRecent(c) { try { const r = recentColors().filter(x => x !== c); r.unshift(c); localStorage.setItem('vd_recent', JSON.stringify(r.slice(0, 14))); } catch (_) { } }
+function colorPickerOpen() { return !!cp; }
+function closeColorPicker() { if (cp) cp.close(); }
+function openColorPicker(hex, onChange) {
+  closeColorPicker();
+  let [h, s, v] = rgb2hsv(...hex2rgb(hex));
+  const cvs = el('canvas', { class: 'svc', width: 300, height: 170 }), hue = el('input', { type: 'range', min: 0, max: 360, step: 1, value: h, class: 'hue' });
+  const hexIn = el('input', { type: 'text', class: 'txt hex', value: hex, maxlength: 7 }), prev = el('span', { class: 'sw big', style: 'background:' + hex });
+  const cur = () => rgb2hex(...hsv2rgb(h, s, v));
+  const draw = () => {
+    const c = cvs.getContext('2d'), w = cvs.width, hh = cvs.height;
+    c.fillStyle = `hsl(${h},100%,50%)`; c.fillRect(0, 0, w, hh);
+    let g = c.createLinearGradient(0, 0, w, 0); g.addColorStop(0, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g; c.fillRect(0, 0, w, hh);
+    g = c.createLinearGradient(0, 0, 0, hh); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, '#000'); c.fillStyle = g; c.fillRect(0, 0, w, hh);
+    c.beginPath(); c.arc(s * w, (1 - v) * hh, 9, 0, 6.283); c.lineWidth = 3; c.strokeStyle = '#fff'; c.stroke(); c.lineWidth = 1.2; c.strokeStyle = '#000'; c.stroke();
+  };
+  const apply = (fromHex) => { const c = cur(); if (!fromHex) hexIn.value = c; prev.style.background = c; draw(); onChange(c); };
+  const pick = e => { const r = cvs.getBoundingClientRect(); s = clamp((e.clientX - r.left) / r.width, 0, 1); v = 1 - clamp((e.clientY - r.top) / r.height, 0, 1); apply(); };
+  cvs.addEventListener('pointerdown', e => { e.preventDefault(); cvs.setPointerCapture(e.pointerId); pick(e); const mv = ev => pick(ev), up = () => { cvs.removeEventListener('pointermove', mv); cvs.removeEventListener('pointerup', up); }; cvs.addEventListener('pointermove', mv); cvs.addEventListener('pointerup', up); });
+  hue.addEventListener('input', () => { h = parseFloat(hue.value); apply(); });
+  hexIn.addEventListener('input', () => { let t = hexIn.value.trim(); if (!t.startsWith('#')) t = '#' + t; if (/^#[0-9a-fA-F]{6}$/.test(t)) { [h, s, v] = rgb2hsv(...hex2rgb(t)); hue.value = h; apply(true); } });
+  const sw = c => el('button', { class: 'swatch', style: 'background:' + c, onclick: () => { [h, s, v] = rgb2hsv(...hex2rgb(c)); hue.value = h; apply(); } });
+  const rec = recentColors();
+  const body = el('div', { class: 'cpbody' }, cvs, hue, el('div', { class: 'cprow' }, prev, hexIn, el('button', { class: 'btn primary', onclick: () => closeColorPicker() }, 'OK')),
+    el('div', { class: 'swgrid' }, PALETTE.map(sw)), rec.length ? el('div', { class: 'swgrid' }, rec.map(sw)) : null,
+    el('div', { class: 'note' }, 'Enter = chốt màu' + (pend ? ' và vẽ hình' : '')));
+  const m = openModal(null, body, null, { cls: 'sheetmodal cpm', onClose: () => { pushRecent(cur()); cp = null; } });
+  cp = { close: m.close }; draw();
+}
+
+/* ---------------- home ---------------- */
+function fmtDate(t) { const d = new Date(t), p = n => String(n).padStart(2, '0'); return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+async function showHome() {
+  doc = null; $('#editor').classList.add('hidden'); $('#home').classList.remove('hidden');
+  const grid = $('#projectGrid'); grid.innerHTML = '';
+  let list = []; try { list = (await dbGetAll('meta')).sort((a, b) => b.updated - a.updated); } catch (e) { console.error(e); }
+  window.homeMetas = list;
+  $('#emptyHint').classList.toggle('hidden', list.length > 0);
+  for (const m of list) {
+    const card = el('div', { class: 'card', 'data-id': m.id, onclick: e => { if (e.target.closest('.cmore')) return; openProject(m.id); } },
+      el('div', { class: 'cthumb' + (m.bg ? '' : ' chk'), style: m.bg ? 'background:' + m.bg : '' }, m.thumb ? el('img', { src: m.thumb, draggable: 'false' }) : null),
+      el('div', { class: 'cinfo' }, el('div', { class: 'cname' }, m.name), el('div', { class: 'cmeta' }, el('span', { class: 'badge ' + m.type }, m.mapping ? 'MAPS' : m.type === 'vector' ? 'VECTOR' : 'NORMAL'), ` ${m.w}×${m.h} · ${fmtDate(m.updated)}`)),
+      el('button', { class: 'ib cmore', html: ic('more'), onclick: () => projectMenu(m) }));
+    grid.append(card);
+  }
+}
+function projectMenu(m) {
+  actionSheet(m.name, [
+    { icon: 'edit', label: 'Mở', fn: () => openProject(m.id) },
+    { icon: 'edit', label: 'Đổi tên', fn: async () => { const n = await askText('Đổi tên project', m.name); if (n) { const d = await dbGet('data', m.id); d.name = n; m.name = n; await dbPut('data', d); await dbPut('meta', m); showHome(); } } },
+    { icon: 'copy', label: 'Nhân đôi', fn: async () => { const d = await dbGet('data', m.id), id = uid(); d.id = id; d.name = m.name + ' copy'; d.updated = Date.now(); await dbPut('data', d); await dbPut('meta', Object.assign({}, m, { id, name: d.name, updated: d.updated })); showHome(); toast('Đã nhân đôi'); } },
+    { icon: 'download', label: 'Xuất file project (.vdraw) vào máy', fn: async () => { const d = await dbGet('data', m.id); await Native.saveBlob(safeName(m.name) + '.vdraw', new Blob([JSON.stringify(d)], { type: 'application/json' })); } },
+    m.mapping ? { icon: 'layers', label: 'Mở Map Editor (đã có)', fn: () => openProject(m.id) } : { icon: 'layers', label: 'Tạo Map Editor (Normal/Height/…) từ texture này', fn: () => mappingDialog(m.id) },
+    ...(m.mapping ? [] : pluginMenuItems(async () => deserializeDoc(await dbGet('data', m.id)))),
+    { icon: 'trash', label: 'Xoá project', danger: true, fn: async () => { if (await askConfirm('Xoá project?', `"${m.name}" sẽ bị xoá vĩnh viễn khỏi máy. Không thể hoàn tác.`, 'Xoá', true)) { await dbDel('data', m.id); await dbDel('meta', m.id); showHome(); toast('Đã xoá'); } } }
+  ]);
+}
+const safeName = n => (n || 'vecdraw').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60);
+async function openProject(id) {
+  try { const o = await dbGet('data', id); if (!o) return toast('Không tìm thấy project'); startEditor(await deserializeDoc(o)); }
+  catch (e) { console.error(e); toast('Lỗi mở project: ' + e.message); }
+}
+function startEditor(d) {
+  doc = d; histReset(); sel = null; pend = null; Stroke = null; liveStroke = null; dirty = false;
+  tool = d.type === 'vector' ? 'poly' : 'brush';
+  $('#home').classList.add('hidden'); $('#editor').classList.remove('hidden');
+  $('#projName').textContent = d.name; $('#layersPanel').classList.add('hidden'); $('#btnLayers').classList.remove('on');
+  buildToolbar(); buildOptions(); resizeView(); fitView(); uiRefresh(true); setSaveState('✓');
+  if (window.innerWidth > 900) toggleLayersPanel(true);
+  requestRender();
+}
+async function goHome() { if (!doc) return; if (pend) commitPending(true); closeColorPicker(); await saveNow(); showHome(); }
+
+/* ---------------- new project ---------------- */
+function newProjectDialog(type) {
+  const isV = type === 'vector', max = isV ? 8192 : 4096;
+  let w = isV ? 1024 : 1024, h = isV ? 1024 : 1024, transparent = false;
+  const name = el('input', { type: 'text', class: 'txt', value: isV ? 'Vector project' : 'Normal project' });
+  const iw = el('input', { type: 'number', class: 'num', value: w, min: 1, max, inputmode: 'numeric' }), ih = el('input', { type: 'number', class: 'num', value: h, min: 1, max, inputmode: 'numeric' });
+  const box = el('div', { class: 'ratiobox' }), info = el('div', { class: 'note' });
+  const upd = () => {
+    w = clamp(Math.round(+iw.value) || 1, 1, max); h = clamp(Math.round(+ih.value) || 1, 1, max);
+    const k = 120 / Math.max(w, h); box.style.width = Math.max(4, w * k) + 'px'; box.style.height = Math.max(4, h * k) + 'px';
+    box.classList.toggle('chk', transparent); info.textContent = `${w} × ${h} px · tỉ lệ ${(w / h).toFixed(3)}:1` + (isV ? ' (artboard — vector phóng to thoải mái, export size tuỳ ý)' : ` · ~${((w * h * 4) / 1048576).toFixed(1)} MB / layer`);
+  };
+  iw.addEventListener('input', upd); ih.addEventListener('input', upd);
+  const presets = (isV ? [[1024, 1024], [512, 512], [16, 16], [64, 64], [1920, 1080], [1080, 1920], [2048, 2048], [4096, 4096]] : [[16, 16], [32, 32], [64, 64], [128, 128], [512, 512], [1024, 1024], [1920, 1080], [2048, 2048]])
+    .map(([a, b]) => el('button', { class: 'pill', onclick: () => { iw.value = a; ih.value = b; upd(); } }, a + '×' + b));
+  const bgT = O.toggle('Nền trong suốt', () => transparent, v => { transparent = v; upd(); });
+  upd();
+  const body = el('div', { class: 'form' }, el('label', null, 'Tên'), name,
+    el('label', null, 'Kích thước (px)'), el('div', { class: 'sizerow' }, iw, el('span', null, '×'), ih),
+    el('div', { class: 'chips' }, presets), el('div', { class: 'ratiowrap' }, box), info, bgT);
+  openModal(isV ? 'Vector project mới' : 'Normal project mới', body, [{ label: 'Huỷ' }, {
+    label: 'Tạo', kind: 'primary', fn: async () => {
+      upd(); if (!isV && w * h > 16.8e6) { toast('Tối đa ~16 triệu pixel (4096×4096)'); return false; }
+      const d = newDoc({ name: name.value.trim() || 'Untitled', type, w, h, bg: transparent ? null : '#ffffff' }); doc = d; await saveNow(); startEditor(d);
+    }
+  }]);
+}
+
+/* ---------------- file import ---------------- */
+function pickFile(accept) {
+  return new Promise(res => { const i = $('#fileInput'); i.value = ''; i.accept = accept || ''; i.onchange = () => res(i.files[0] || null); i.click(); });
+}
+async function sniffFile(file) {
+  const looksProject = /\.(vdraw|json)$/i.test(file.name) || file.type === 'application/json';
+  if (looksProject) { try { const o = JSON.parse(await file.text()); if (o && o.layers && o.type) return { kind: 'project', o }; } catch (_) { } }
+  if (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name)) return { kind: 'image' };
+  try { const o = JSON.parse(await file.text()); if (o && o.layers && o.type) return { kind: 'project', o }; } catch (_) { }
+  return { kind: 'unknown' };
+}
+async function openFileFromHome() {
+  const f = await pickFile('*/*'); if (!f) return;
+  const k = await sniffFile(f);
+  if (k.kind === 'project') {
+    try { const o = k.o; o.id = uid(); const d = await deserializeDoc(o); doc = d; await saveNow(); startEditor(d); toast('Đã mở project'); } catch (e) { toast('File project lỗi: ' + e.message); }
+  } else if (k.kind === 'image') { await traceFromImage(f, true); }
+  else toast('Không nhận ra loại file này');
+}
+async function traceFromImage(file) {
+  try {
+    const src = await fileToDataURL(file), im = await loadImage(src);
+    const iw = im.naturalWidth || 512, ih = im.naturalHeight || 512, k = 1024 / Math.max(iw, ih), W = Math.round(iw * k), H = Math.round(ih * k);
+    const d = newDoc({ name: 'Trace ' + file.name.replace(/\.[^.]+$/, ''), type: 'vector', w: W, h: H });
+    const L = newLayer(d, 'img', 'Ảnh gốc'); L.img = im; L.src = src; L.iw = iw; L.ih = ih; L.smooth = !(iw <= 128 && ih <= 128);
+    L.corners = [[0, 0], [W, 0], [W, H], [0, H]]; L.opacity = 0.55; L.locked = true; d.layers.unshift(L);
+    doc = d; await saveNow(); startEditor(d); toast('Ảnh nằm ở layer dưới (đã khoá). Chấm điểm để vẽ vector lên trên!', 3800);
+  } catch (e) { toast('Không mở được ảnh: ' + e.message); }
+}
+async function importImageFlow() {
+  const f = await pickFile('image/*,.svg'); if (!f) return;
+  try {
+    const src = await fileToDataURL(f);
+    await addImageLayerFromSrc(src, f.name.replace(/\.[^.]+$/, ''));
+    setTool('select'); toggleLayersPanel(true); toast('Đã tạo layer mới — kéo/resize/xoay, bật Warp để kéo méo', 3200);
+  } catch (e) { toast('Import lỗi: ' + e.message); }
+}
+async function importProjectFlow() {
+  const f = await pickFile('*/*'); if (!f) return;
+  const k = await sniffFile(f);
+  if (k.kind === 'image') { const src = await fileToDataURL(f); await addImageLayerFromSrc(src, f.name.replace(/\.[^.]+$/, '')); setTool('select'); return; }
+  if (k.kind !== 'project') return toast('Không phải file project/ảnh');
+  try {
+    const o = k.o; if (o.type !== doc.type) return toast('Khác loại project (vector/normal) — hãy mở từ menu chính');
+    const d2 = await deserializeDoc(o);
+    withHist(() => {
+      for (const l of d2.layers) {
+        l.id = uid(); l.rev = ++REV;
+        if (l.type === 'ras') { const c = mkCanvas(doc.w, doc.h); c.getContext('2d').drawImage(l.canvas, 0, 0); l.canvas = c; delete l._png; }
+        doc.layers.push(l);
+      }
+      doc.active = d2.layers[d2.layers.length - 1].id;
+    });
+    toast('Đã import ' + d2.layers.length + ' layer');
+  } catch (e) { toast('Lỗi import: ' + e.message); }
+}
+
+/* ---------------- export ---------------- */
+async function exportBlob(fmt, W, H, bg, q) {
+  if (fmt === 'svg') return new Blob([exportSVG(doc, W, H, bg === 'transparent' ? null : bg === 'white' ? '#ffffff' : undefined)], { type: 'image/svg+xml' });
+  const c = renderDocToCanvas(doc, W, H, { bg: fmt === 'jpg' ? (bg === 'transparent' || bg === 'white' || !doc.bg ? 'white' : 'keep') : bg });
+  return new Promise(res => c.toBlob(res, fmt === 'jpg' ? 'image/jpeg' : 'image/png', q));
+}
+function exportDialog() {
+  const isV = doc.type === 'vector';
+  const st = { fmt: 'png', w: doc.w, h: doc.h, lock: true, bg: 'keep', q: 0.92 };
+  const iw = el('input', { type: 'number', class: 'num', value: st.w, min: 1, inputmode: 'numeric' }), ih = el('input', { type: 'number', class: 'num', value: st.h, min: 1, inputmode: 'numeric' });
+  const info = el('div', { class: 'note' }), ratio = doc.w / doc.h;
+  const upd = () => { info.textContent = `Xuất ${st.fmt === 'svg' ? 'SVG' : st.w + ' × ' + st.h + ' px (' + ((st.w * st.h) / 1e6).toFixed(2) + ' MP)'}`; };
+  iw.disabled = ih.disabled = !isV;
+  iw.addEventListener('input', () => { st.w = Math.max(1, Math.round(+iw.value) || 1); if (st.lock) { st.h = Math.max(1, Math.round(st.w / ratio)); ih.value = st.h; } upd(); });
+  ih.addEventListener('input', () => { st.h = Math.max(1, Math.round(+ih.value) || 1); if (st.lock) { st.w = Math.max(1, Math.round(st.h * ratio)); iw.value = st.w; } upd(); });
+  const setScale = k => { st.w = Math.round(doc.w * k); st.h = Math.round(doc.h * k); iw.value = st.w; ih.value = st.h; upd(); };
+  const qRow = el('div', { class: 'hidden' }), q = O.slider('Chất lượng JPG', 40, 100, 1, () => Math.round(st.q * 100), v => st.q = v / 100, v => v + '%'); qRow.append(q);
+  const fmtSeg = O.seg(isV ? [['png', 'PNG'], ['jpg', 'JPG'], ['svg', 'SVG']] : [['png', 'PNG'], ['jpg', 'JPG']], () => st.fmt, v => { st.fmt = v; qRow.classList.toggle('hidden', v !== 'jpg'); sizeBox.classList.toggle('hidden', v === 'svg'); upd(); });
+  const lockT = O.toggle('Khoá tỉ lệ', () => st.lock, v => { st.lock = v; });
+  const sizeBox = el('div', null, el('label', null, 'Kích thước xuất (px)' + (isV ? '' : ' — Normal project: cố định')), el('div', { class: 'sizerow' }, iw, el('span', null, '×'), ih),
+    isV ? el('div', { class: 'chips' }, el('span', { class: 'lab2' }, 'Nhanh:'), [0.5, 1, 2, 4, 8].map(k => el('button', { class: 'pill', onclick: () => setScale(k) }, '×' + k)), lockT) : null);
+  const bgSeg = O.seg([['keep', 'Giữ nền'], ['white', 'Nền trắng'], ['transparent', 'Trong suốt']], () => st.bg, v => st.bg = v);
+  upd();
+  const run = async (share) => {
+    if (st.fmt !== 'svg') {
+      if (st.w > 16384 || st.h > 16384 || st.w * st.h > 100e6) { toast('Quá lớn: tối đa 16384 px/cạnh và 100 MP'); return false; }
+    }
+    toast('Đang render…', 1500); await new Promise(r => setTimeout(r, 30));
+    try {
+      const blob = await exportBlob(st.fmt, st.w, st.h, st.bg, st.q); if (!blob) throw new Error('Render thất bại (quá lớn?)');
+      const name = safeName(doc.name) + (st.fmt === 'svg' ? '' : `_${st.w}x${st.h}`) + '.' + st.fmt;
+      if (share) await Native.shareBlob(name, blob); else await Native.saveBlob(name, blob);
+    } catch (e) { console.error(e); toast('Export lỗi: ' + e.message); return false; }
+  };
+  openModal('Export ảnh', el('div', { class: 'form' }, el('label', null, 'Định dạng'), fmtSeg, qRow, sizeBox, el('label', null, 'Nền'), bgSeg, info),
+    [{ label: 'Đóng' }, { label: 'Chia sẻ', fn: () => run(true) }, { label: 'Lưu vào máy', kind: 'primary', fn: () => run(false) }]);
+}
+async function saveProjectFile() {
+  await saveNow(); const data = await serializeDoc(doc);
+  await Native.saveBlob(safeName(doc.name) + '.vdraw', new Blob([JSON.stringify(data)], { type: 'application/json' }));
+}
+
+/* ---------------- project settings ---------------- */
+function settingsDialog() {
+  const isV = doc.type === 'vector';
+  const name = el('input', { type: 'text', class: 'txt', value: doc.name });
+  let bg = doc.bg || '#ffffff', transparent = !doc.bg, w = doc.w, h = doc.h;
+  const iw = el('input', { type: 'number', class: 'num', value: w, inputmode: 'numeric' }), ih = el('input', { type: 'number', class: 'num', value: h, inputmode: 'numeric' });
+  const body = el('div', { class: 'form' }, el('label', null, 'Tên project'), name,
+    el('label', null, 'Nền'), el('div', { class: 'chips' }, O.color(() => bg, v => { bg = v; transparent = false; tgl.classList.remove('on'); }, 'Màu nền'), (window.tgl = O.toggle('Trong suốt', () => transparent, v => { transparent = v; }))),
+    isV ? el('label', null, 'Artboard (px)') : el('div', { class: 'note' }, 'Normal project: kích thước cố định ' + doc.w + '×' + doc.h),
+    isV ? el('div', { class: 'sizerow' }, iw, el('span', null, '×'), ih) : null);
+  const tgl = window.tgl;
+  openModal('Cài đặt project', body, [{ label: 'Huỷ' }, {
+    label: 'Áp dụng', kind: 'primary', fn: () => {
+      withHist(() => {
+        doc.name = name.value.trim() || doc.name; doc.bg = transparent ? null : bg;
+        if (isV) { doc.w = clamp(Math.round(+iw.value) || doc.w, 1, 8192); doc.h = clamp(Math.round(+ih.value) || doc.h, 1, 8192); }
+      }); $('#projName').textContent = doc.name; requestRender();
+    }
+  }]);
+}
+
+/* ---------------- editor menu ---------------- */
+function editorMenu() {
+  actionSheet(doc.name, [
+    { icon: 'save', label: 'Lưu project', fn: async () => { await saveNow(); toast('Đã lưu vào máy ✓'); } },
+    { icon: 'image', label: 'Export ảnh (PNG / JPG / SVG)…', fn: exportDialog },
+    { icon: 'download', label: 'Lưu file project (.vdraw)', fn: saveProjectFile },
+    ...(doc.mapping ? [
+      { icon: 'download', label: 'Export ' + MAP_TABS.find(t => t.id === doc.mapping.cur).asset + '…', fn: () => exportSingle(doc.mapping.cur) },
+      { icon: 'download', label: 'Export Center (nhiều map → thư mục)…', fn: exportCenter },
+      { icon: 'rotate', label: 'Đồng bộ background từ texture gốc', fn: () => syncRef(true) }
+    ] : [{ icon: 'layers', label: 'Tạo Map Editor từ project này', fn: async () => { await saveNow(); mappingDialog(doc.id); } }]),
+    ...pluginMenuItems(async () => doc),
+    { icon: 'upload', label: 'Import ảnh → layer mới', fn: importImageFlow },
+    { icon: 'upload', label: 'Import file project / vector…', fn: importProjectFlow },
+    { icon: 'sliders', label: 'Cài đặt project', fn: settingsDialog },
+    { icon: 'fit', label: 'Vừa màn hình', fn: fitView },
+    { icon: 'home', label: 'Về menu chính', fn: goHome }
+  ]);
+}
+
+/* ---------------- back button ---------------- */
+function handleBack() {
+  if (modalStack.length) { modalStack[modalStack.length - 1].close(); return true; }
+  if (!$('#editor').classList.contains('hidden')) {
+    if (pend) { cancelPending(); return true; }
+    if (!$('#layersPanel').classList.contains('hidden')) { toggleLayersPanel(false); return true; }
+    goHome(); return true;
+  }
+  return false;
+}

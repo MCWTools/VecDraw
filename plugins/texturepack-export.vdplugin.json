@@ -1,0 +1,16 @@
+{
+  "vecdraw-plugin": 1,
+  "id": "texturepack-export",
+  "name": "TexturePack Folder Export",
+  "version": "1.0",
+  "description": "Export layer thành PNG + map hậu tố (_n, _s, _e) vào textures/<project>/",
+  "type": "export-folder",
+  "menuLabel": "Export in TexturePack folder",
+  "folder": "textures/{name}",
+  "maps": [
+    { "id": "base", "label": "Base (texture chính)", "suffix": "" },
+    { "id": "normal", "label": "Normal map", "suffix": "_n", "match": ["normal", "_n"] },
+    { "id": "specular", "label": "Specular / PBR", "suffix": "_s", "match": ["spec", "rough", "metal", "_s"] },
+    { "id": "emissive", "label": "Emissive", "suffix": "_e", "match": ["emis", "glow", "_e"] }
+  ]
+}

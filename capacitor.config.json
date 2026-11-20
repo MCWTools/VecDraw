@@ -1,0 +1,10 @@
+{
+  "appId": "com.vecdraw.app",
+  "appName": "VecDraw",
+  "webDir": "www",
+  "backgroundColor": "#14151a",
+  "android": {
+    "allowMixedContent": false,
+    "adjustMarginsForEdgeToEdge": "auto"
+  }
+}
