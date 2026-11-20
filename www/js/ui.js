@@ -3,7 +3,7 @@
    VecDraw – UI: dialogs, home, toolbar, options, layers, color picker, export/import
    ========================================================= */
 const TOOL_DEFS = {
-  vector: [['select', 'select', 'Chọn'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['bucket', 'bucket', 'Fill'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']],
+  vector: [['select', 'select', 'Chọn'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['shape', 'shapes', 'Hình'], ['eraser', 'eraser', 'Tẩy'], ['bucket', 'bucket', 'Fill'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']],
   raster: [['select', 'select', 'Transform'], ['brush', 'brush', 'Cọ'], ['poly', 'poly', 'Đa giác'], ['free', 'free', 'Vẽ tay'], ['eraser', 'eraser', 'Tẩy'], ['smudge', 'smudge', 'Nhoè màu'], ['blur', 'blur', 'Blur'], ['bucket', 'bucket', 'Đổ màu'], ['eyedrop', 'dropper', 'Hút màu'], ['hand', 'hand', 'Kéo']]
 }
   ; for (const k in TOOL_DEFS) TOOL_DEFS[k] = TOOL_DEFS[k].map(a => ({ id: a[0], icon: a[1], label: a[2] }));
@@ -102,7 +102,18 @@ function buildOptions() {
     if (tool === 'free' && !brushMode) t.push(O.seg([['auto', 'Tự động'], ['smooth', 'Mượt'], ['straight', 'Thẳng'], ['raw', 'Thô']], () => ST.free, v => { ST.free = v; }));
     if (t.length) add(...t);
   };
-  if (useSel) { shapeControls(true); if (s) add(O.note('Kéo chấm = sửa điểm · kéo thân hình = di chuyển · chạm đúp vào cạnh = thêm điểm · nút "Khung" = resize / xoay')); }
+  if (useSel) {
+    shapeControls(true);
+    if (s && s.gen) {
+      const gk = () => (selShape() || s).gen || {};
+      add(O.slider('Scale', 10, 400, 1, () => gk().sc || 100, v => genScale(v), v => v + '%'));
+      if (s.gen.kind === 'saw') {
+        add(O.slider('Số răng', 1, 60, 1, () => gk().n, v => genSet('n', v)), O.slider('Nghiêng', -90, 90, 1, () => gk().skew || 0, v => genSet('skew', v), v => v + '°'));
+        add(O.slider('Độ cao', 2, Math.max(200, Math.round(doc.h)), 1, () => Math.round(gk().h), v => genSet('h', v), v => v + 'px'), O.slider('Độ dài', 10, Math.max(400, Math.round(doc.w * 1.5)), 1, () => Math.round(gk().len), v => genSet('len', v), v => v + 'px'));
+        add(O.note('Chấm trên hình = từng răng, kéo từng chấm để chỉnh riêng (đổi thông số ở trên sẽ dựng lại răng cưa). Xoay ở nút "Sửa hình" / Khung.'));
+      } else if (s.gen.kind === 'circle') add(O.note('Chỉ có 4 chấm để kéo méo hình tròn.'));
+    }
+    if (s) add(O.note('Kéo chấm = sửa điểm · kéo thân hình = di chuyển · chạm đúp vào cạnh = thêm điểm · nút "Khung" = resize / xoay')); }
   else if (tool === 'select') {
     const L = activeLayer();
     if (L && L.type === 'img') {
@@ -111,6 +122,10 @@ function buildOptions() {
     } else add(O.note(doc.type === 'vector' ? 'Chạm vào 1 hình để chọn. Chạm đúp để sửa từng điểm.' : 'Chọn layer ảnh (import) để transform / warp.'));
   }
   else if (tool === 'poly') { shapeControls(true); add(O.note('Chạm để thêm điểm · kéo điểm để chỉnh · ✓ hoặc Enter để vẽ')); }
+  else if (tool === 'shape') {
+    add(O.seg([['rect', 'Chữ nhật'], ['circle', 'Tròn'], ['saw', 'Răng cưa']], () => ST.shape, v => { ST.shape = v; }));
+    shapeControls(false); add(O.note('Kéo trên canvas để tạo (hoặc chạm 1 cái = cỡ mặc định). Tạo xong tự chuyển sang Chọn để kéo điểm / chỉnh thông số.'));
+  }
   else if (tool === 'free') { shapeControls(false); }
   else if (tool === 'brush') {
     add(O.seg([['soft', 'Cọ'], ['pencil', 'Pencil'], ['air', 'Phun'], ['pixel', 'Pixel']], () => RS.style, v => { RS.style = v; buildOptions(); }), O.color(() => ST.color, v => { ST.color = v; }, 'Màu'));
@@ -680,10 +695,24 @@ function chkRow(label, desc, get, set) {
   cb.addEventListener('change', () => set(cb.checked));
   return el('label', { class: 'chkrow' }, cb, el('span', { class: 'ct' }, el('b', null, label), desc ? el('small', null, desc) : null));
 }
+function backupBlock() {
+  const lab = el('div', { class: 'note' }), st = el('div', { class: 'note' });
+  const upd = () => { const d = Backup.dir(); lab.textContent = d ? 'Thư mục: ' + decodeURIComponent(String(d.label || d.uri)) : 'Chưa chọn thư mục. Project hiện chỉ nằm trong bộ nhớ của app → gỡ app là MẤT.'; };
+  const busy = async (msg, fn) => { st.textContent = msg; try { await fn(); } catch (e) { st.textContent = 'Lỗi: ' + ((e && e.message) || e); } };
+  upd();
+  return el('div', { class: 'bkblock' }, lab,
+    el('button', { class: 'btn', onclick: async () => { const r = await Backup.choose(); upd(); if (r) st.textContent = 'Đã chọn. Bấm "Sao lưu tất cả ngay" để chép project hiện có.'; } }, '📁 Chọn / đổi thư mục sao lưu'),
+    chkRow('Tự sao lưu khi lưu project', 'Mỗi lần project tự lưu, 1 bản .vdraw cũng được chép vào thư mục trên (có thể trễ vài giây). Chọn thư mục ở ngoài app (vd Documents/VecDraw) thì gỡ app vẫn còn.', () => Prefs.get('autoBackup', true), v => Prefs.set('autoBackup', v)),
+    el('button', { class: 'btn', onclick: () => busy('Đang sao lưu…', async () => { const n = await Backup.all(); st.textContent = n < 0 ? 'Có ' + (-n) + ' project lỗi: ' + Backup.err() : (n === 0 && !Backup.dir()) ? '' : 'Đã sao lưu ' + n + ' project.'; }) }, '💾 Sao lưu tất cả ngay'),
+    el('button', { class: 'btn', onclick: () => busy('Đang khôi phục…', async () => { const r = await Backup.restore(); if (!r) { st.textContent = ''; return; } st.textContent = 'Tìm thấy ' + r.total + ' file: thêm lại ' + r.added + ', đã có sẵn ' + r.skipped + (r.failed ? ', lỗi ' + r.failed : '') + '.'; if (r.added && typeof showHome === 'function') showHome(); }) }, '♻️ Khôi phục project từ thư mục'),
+    st);
+}
 function appSettings() {
   const list = el('div', { class: 'setlist' },
     el('div', { class: 'setsec' }, 'Hút màu'),
     chkRow('Hút màu từ layer hiện tại', 'Bật: chỉ layer đang chọn mới được hút (màu thật). Chỗ layer đó trống thì không hút, màu giữ nguyên. Tắt: hút màu theo cả ảnh đang thấy.', () => Prefs.get('pickLayerOnly', false), v => Prefs.set('pickLayerOnly', v)),
+    el('div', { class: 'setsec' }, 'Sao lưu project'),
+    backupBlock(),
     el('div', { class: 'setsec' }, 'Mở rộng'),
     el('button', { class: 'btn', onclick: () => { if (typeof pluginManager === 'function') pluginManager(); } }, '🧩 Quản lý Plugins'),
     el('div', { class: 'setsec' }, 'Thông tin'),

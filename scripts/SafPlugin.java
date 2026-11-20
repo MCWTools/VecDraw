@@ -18,6 +18,8 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 
 /** Storage Access Framework: hộp thoại lưu file + chọn thư mục của Android. */
@@ -71,6 +73,9 @@ public class SafPlugin extends Plugin {
             return;
         }
         Uri tree = result.getData().getData();
+        try {   // giữ quyền truy cập thư mục này lâu dài (kể cả sau khi mở lại app)
+            getContext().getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Exception ignored) { }
         JSObject o = new JSObject();
         o.put("uri", tree.toString());
         o.put("name", tree.getLastPathSegment());
@@ -125,6 +130,37 @@ public class SafPlugin extends Plugin {
             os.write(Base64.decode(call.getString("data", ""), Base64.DEFAULT));
             os.close();
             call.resolve();
+        } catch (Exception e) {
+            call.reject(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /** Đọc 1 file trong thư mục đã chọn theo tên -> base64. */
+    @PluginMethod
+    public void readFromTree(PluginCall call) {
+        try {
+            Uri tree = Uri.parse(call.getString("uri"));
+            String name = call.getString("name");
+            ContentResolver cr = getContext().getContentResolver();
+            Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree));
+            Uri found = null;
+            Cursor c = cr.query(children, new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null);
+            if (c != null) {
+                while (c.moveToNext()) {
+                    if (name != null && name.equals(c.getString(1))) { found = DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0)); break; }
+                }
+                c.close();
+            }
+            if (found == null) { call.reject("not found"); return; }
+            InputStream is = cr.openInputStream(found);
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            is.close();
+            JSObject o = new JSObject();
+            o.put("data", Base64.encodeToString(bo.toByteArray(), Base64.NO_WRAP));
+            call.resolve(o);
         } catch (Exception e) {
             call.reject(String.valueOf(e.getMessage()));
         }

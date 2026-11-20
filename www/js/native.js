@@ -64,10 +64,64 @@ const Native = (() => {
     if (d.handle) { const fh = await d.handle.getFileHandle(name, { create: true }), w = await fh.createWritable(); await w.write(blob); await w.close(); return; }
     d.zipFiles.push({ path: name, blob });
   }
+  async function readIn(d, name) {
+    if (d.native) { const r = await Saf.readFromTree({ uri: d.uri, name }); const bin = atob(r.data), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u]); }
+    if (d.handle) { const fh = await d.handle.getFileHandle(name); return await fh.getFile(); }
+    throw new Error('không đọc được');
+  }
   function init() {
     const App = P('App');
     if (isNative && App) App.addListener('backButton', () => { if (!handleBack()) App.exitApp(); });
     else window.addEventListener('popstate', () => handleBack());
   }
-  return { isNative, saveBlob, shareBlob, pickSave, pickDir, listDir, writeIn, init };
+  if (isNative) setTimeout(() => { try { if (!Backup.dir() && !Prefs.get('backupAsked', false)) { Prefs.set('backupAsked', true); toast('Mẹo: Cài đặt → "Thư mục sao lưu" để gỡ/cài lại app không mất project', 7000); } } catch (_) { } }, 3000);
+  return { isNative, saveBlob, shareBlob, pickSave, pickDir, listDir, writeIn, readIn, init };
+})();
+
+/* ---------------- sao lưu project ra thư mục ngoài (không bị xoá khi gỡ app) ---------------- */
+const Backup = (() => {
+  const dir = () => { const d = Prefs.get('backupDir', null); return d && d.uri ? { native: true, uri: d.uri, label: d.label } : null; };
+  const fname = (id, name) => safeName(name) + '__' + id + '.vdraw';
+  const pending = new Map(); let timer = 0, lastErr = '';
+  const blobOf = data => new Blob([JSON.stringify(data)], { type: 'application/json' });
+  function queue(data) {
+    if (!dir() || !Prefs.get('autoBackup', true) || !data || !data.id) return;
+    pending.set(data.id, data); clearTimeout(timer); timer = setTimeout(flush, 5000);
+  }
+  async function flush() {
+    const d = dir(); if (!d) return;
+    for (const [id, data] of [...pending]) {
+      pending.delete(id);
+      try { await Native.writeIn(d, fname(id, data.name), blobOf(data), true); lastErr = ''; } catch (e) { lastErr = String((e && e.message) || e); console.warn('backup', e); }
+    }
+  }
+  async function choose() {
+    const r = await Native.pickDir(); if (!r || !r.native) { if (r) toast('Chỉ chọn được thư mục trên app Android'); return null; }
+    Prefs.set('backupDir', { uri: r.uri, label: r.label }); return r;
+  }
+  async function all() {
+    const d = dir(); if (!d) { toast('Chưa chọn thư mục sao lưu'); return 0; }
+    let n = 0, bad = 0;
+    for (const data of await dbGetAll('data')) { try { await Native.writeIn(d, fname(data.id, data.name), blobOf(data), true); n++; } catch (e) { bad++; lastErr = String((e && e.message) || e); } }
+    return bad ? -bad : n;
+  }
+  /* khôi phục: đọc mọi file .vdraw trong thư mục, project nào chưa có (theo id) thì thêm lại */
+  async function restore() {
+    const d = dir(); if (!d) { toast('Chưa chọn thư mục sao lưu'); return null; }
+    const names = (await Native.listDir(d)).filter(x => /\.vdraw$/i.test(x)), have = new Set((await dbGetAll('meta')).map(m => m.id));
+    let added = 0, skipped = 0, failed = 0;
+    for (const nm of names) {
+      try {
+        const o = JSON.parse(await (await Native.readIn(d, nm)).text());
+        if (!o || !o.id || !o.layers) { failed++; continue; }
+        if (have.has(o.id)) { skipped++; continue; }
+        const dd = await deserializeDoc(o), thumb = await makeThumb(dd);
+        await dbPut('data', o);
+        await dbPut('meta', { id: dd.id, name: dd.name, type: dd.type, w: dd.w, h: dd.h, updated: Date.now(), thumb, bg: dd.bg, mapping: !!dd.mapping });
+        have.add(o.id); added++;
+      } catch (e) { failed++; console.warn('restore', nm, e); }
+    }
+    return { added, skipped, failed, total: names.length };
+  }
+  return { dir, queue, flush, choose, all, restore, err: () => lastErr };
 })();

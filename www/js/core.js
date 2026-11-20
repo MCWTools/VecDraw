@@ -65,6 +65,7 @@ const ICON_P = {
   image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
   select: '<path d="M4 3l7.07 17 2.51-7.39L21 10.1 4 3z"/>',
   poly: '<polygon points="12 3 21 9.5 17.5 20 6.5 20 3 9.5" stroke-dasharray="3 2.5"/><circle cx="12" cy="3" r="1.6" fill="currentColor"/><circle cx="21" cy="9.5" r="1.6" fill="currentColor"/><circle cx="17.5" cy="20" r="1.6" fill="currentColor"/><circle cx="6.5" cy="20" r="1.6" fill="currentColor"/><circle cx="3" cy="9.5" r="1.6" fill="currentColor"/>',
+  shapes: '<rect x="3" y="11" width="9" height="9" rx="1"/><circle cx="16" cy="8" r="5"/>',
   free: '<path d="M3 17c3-9 6-9 8-4s5 4 10-6"/><circle cx="21" cy="7" r="1.5" fill="currentColor"/>',
   pencil: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
   brush: '<path d="M18.37 2.63L14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 7l9 9 1.59-1.59a2 2 0 0 0 0-2.82L17 10l4.37-4.37a2.12 2.12 0 1 0-3-3z"/><path d="M9 8c-2 3-4 3.5-7 4l8 10c2-1 6-5 6-7"/>',
@@ -100,7 +101,7 @@ const ic = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 let doc = null, REV = 1, liveStroke = null;
 const view = { s: 1, ox: 0, oy: 0 };
 // style cho shape (vector + shape tools của raster)
-const ST = { mode: 'line', color: '#1a1a1a', grad: false, color2: '#ff5b6b', stops: null, gAngle: 0, width: 6, opacity: 1, brush: 'pen', closed: true, curve: false, free: 'auto', fmode: 'lasso', step: 1 };
+const ST = { mode: 'line', color: '#1a1a1a', grad: false, color2: '#ff5b6b', stops: null, gAngle: 0, width: 6, opacity: 1, brush: 'pen', closed: true, curve: false, free: 'auto', fmode: 'lasso', step: 1, shape: 'rect' };
 // style cho raster brush
 const RS = { size: 14, hard: 0.7, opacity: 1, style: 'soft', eSize: 30, eHard: 0.6, eOp: 1, sSize: 36, sStr: 0.55, bSize: 36, bStr: 0.5, tol: 24, contig: true, all: false };
 // vector eraser
@@ -181,8 +182,9 @@ function segs(nodes, closed) {
     const straight = !!(a[2] && b[2]);
     let c1, c2;
     if (!straight) {
-      c1 = a[2] ? [a[0], a[1]] : [a[0] + (b[0] - pa[0]) / 6, a[1] + (b[1] - pa[1]) / 6];
-      c2 = b[2] ? [b[0], b[1]] : [b[0] - (nb[0] - a[0]) / 6, b[1] - (nb[1] - a[1]) / 6];
+      const ka = a[3] || 1 / 6, kb = b[3] || 1 / 6;   // n[3] = hệ số tay cầm (hình tròn dựng sẵn dùng 0.2761 để 4 điểm ra đúng đường tròn)
+      c1 = a[2] ? [a[0], a[1]] : [a[0] + (b[0] - pa[0]) * ka, a[1] + (b[1] - pa[1]) * ka];
+      c2 = b[2] ? [b[0], b[1]] : [b[0] - (nb[0] - a[0]) * kb, b[1] - (nb[1] - a[1]) * kb];
     }
     out.push({ a, b, c1, c2, straight });
   }
@@ -784,8 +786,27 @@ async function saveNow() {
     const thumb = await makeThumb(d);
     await dbPut('data', data);
     await dbPut('meta', { id: d.id, name: d.name, type: d.type, w: d.w, h: d.h, updated: Date.now(), thumb, bg: d.bg, mapping: !!d.mapping });
+    if (typeof Backup !== 'undefined') Backup.queue(data);
     if (doc === d && !dirty) setSaveState('✓');
   } catch (e) { console.error(e); setSaveState('!'); toast('Lỗi lưu: ' + e.message); }
   saving = false;
   if (saveAgain) { saveAgain = false; saveNow(); }
+}
+
+/* ---------------- hình dựng sẵn: chữ nhật / tròn / răng cưa ---------------- */
+const CIRCLE_K = 0.2761;
+function genSawNodes(g, cx, cy, rotDeg) {
+  const n = Math.max(1, Math.round(g.n)), len = Math.max(1, g.len), h = Math.max(1, g.h), p = len / n, tf = clamp(0.5 + (g.skew || 0) / 200, 0.02, 0.98);
+  const x0 = -len / 2, yb = h / 2, yt = -h / 2, out = [];
+  for (let i = 0; i < n; i++) { out.push([x0 + i * p, yb, 1]); out.push([x0 + i * p + tf * p, yt, 1]); }
+  out.push([x0 + len, yb, 1]);
+  const a = (rotDeg || 0) * Math.PI / 180, co = Math.cos(a), si = Math.sin(a);
+  return out.map(q => [cx + q[0] * co - q[1] * si, cy + q[0] * si + q[1] * co, 1]);
+}
+function makeBuiltin(kind, x0, y0, x1, y1) {
+  const L = Math.min(x0, x1), T = Math.min(y0, y1), R = Math.max(x0, x1), B = Math.max(y0, y1), cx = (L + R) / 2, cy = (T + B) / 2, w = R - L, h = B - T;
+  if (kind === 'rect') return { nodes: [[L, T, 1], [R, T, 1], [R, B, 1], [L, B, 1]], closed: true, gen: { kind: 'rect', sc: 100 } };
+  if (kind === 'circle') return { nodes: [[cx, T, 0, CIRCLE_K], [R, cy, 0, CIRCLE_K], [cx, B, 0, CIRCLE_K], [L, cy, 0, CIRCLE_K]], closed: true, gen: { kind: 'circle', sc: 100 } };
+  const g = { kind: 'saw', n: 6, len: Math.max(w, 10), h: Math.max(h, 6), skew: 0, sc: 100 };
+  return { nodes: genSawNodes(g, cx, cy, 0), closed: ST.mode === 'fill', gen: g };
 }

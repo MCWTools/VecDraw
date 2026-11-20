@@ -204,6 +204,43 @@ const freeTool = {
   }
 };
 
+/* ---------------- hình dựng sẵn (kéo để tạo) ---------------- */
+const shapeTool = {
+  a: null, b: null,
+  down(p) { if (!checkEditable(activeLayer())) return; this.a = [p.x, p.y]; this.b = [p.x, p.y]; },
+  move(p) { if (this.a) { this.b = [p.x, p.y]; requestRender(); } },
+  up(p) {
+    if (!this.a) return; let [x0, y0] = this.a, x1 = p.x, y1 = p.y; this.a = this.b = null;
+    if (hypot(x1 - x0, y1 - y0) * view.s < 14) { const r = Math.min(doc.w, doc.h) / 6; x0 = p.x - r; y0 = p.y - r * (ST.shape === 'saw' ? 0.5 : 1); x1 = p.x + r; y1 = p.y + r * (ST.shape === 'saw' ? 0.5 : 1); }
+    const b = makeBuiltin(ST.shape, x0, y0, x1, y1), s = newShape(b.nodes, b.closed); s.gen = b.gen; s.round = 0;
+    if (ST.shape === 'saw' && ST.mode !== 'fill') s.closed = false;
+    if (commitShape(s) === false) return;
+    const L = activeLayer(); const sh = L && L.shapes && L.shapes.find(q => q.id === s.id);
+    setTool('select'); if (sh) selectShape(L, sh);
+  },
+  cancel() { this.a = this.b = null; },
+  overlay(c) {
+    if (!this.a) return; const b = makeBuiltin(ST.shape, this.a[0], this.a[1], this.b[0], this.b[1]), s = newShape(b.nodes, b.closed, 5);
+    c.save(); c.setTransform(DPR * view.s, 0, 0, DPR * view.s, view.ox * DPR, view.oy * DPR); drawShape(c, s); c.restore();
+  }
+};
+/* chỉnh thông số hình dựng sẵn: scale tại chỗ, hoặc dựng lại răng cưa theo thông số */
+function genScale(v) {
+  const s = selShape(); if (!s || !s.gen) return; const f = v / (s.gen.sc || 100); if (!isFinite(f) || f <= 0) return;
+  const L = layerById(sel.lid), ns = cloneShape(s); let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const n of ns.nodes) { x0 = Math.min(x0, n[0]); y0 = Math.min(y0, n[1]); x1 = Math.max(x1, n[0]); y1 = Math.max(y1, n[1]); }
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2; ns.nodes.forEach(n => { n[0] = cx + (n[0] - cx) * f; n[1] = cy + (n[1] - cy) * f; });
+  ns.gen = Object.assign({}, s.gen, { sc: v }); if (ns.gen.kind === 'saw') { ns.gen.len *= f; ns.gen.h *= f; }
+  const before = snap(); L.shapes = L.shapes.map(q => q === s ? ns : q); touch(L); pushHist({ kind: 'doc', before, after: snap() }, 'gsc:' + s.id); requestRender();
+}
+function genSet(k, v) {
+  const s = selShape(); if (!s || !s.gen || s.gen.kind !== 'saw') return;
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const n of s.nodes) { x0 = Math.min(x0, n[0]); y0 = Math.min(y0, n[1]); x1 = Math.max(x1, n[0]); y1 = Math.max(y1, n[1]); }
+  const g = Object.assign({}, s.gen, { [k]: v }), L = layerById(sel.lid), ns = cloneShape(s);
+  ns.nodes = genSawNodes(g, (x0 + x1) / 2, (y0 + y1) / 2, s.rot || 0); ns.gen = g; sel.ni = -1;
+  const before = snap(); L.shapes = L.shapes.map(q => q === s ? ns : q); touch(L); pushHist({ kind: 'doc', before, after: snap() }, 'gen:' + k + ':' + s.id); requestRender();
+}
+
 /* ---------------- select / transform / node edit ---------------- */
 let xf = null, lastTap = { t: 0, x: 0, y: 0 };
 function selShape() { if (!sel) return null; const L = layerById(sel.lid); if (!L || L.type !== 'vec') return null; return L.shapes.find(s => s.id === sel.sid) || null; }
@@ -711,7 +748,7 @@ function pickColor(p) {
 
 /* ---------------- tool table ---------------- */
 const TOOLS = {
-  select: selectTool, poly: polyTool, free: freeTool, hand: {},
+  select: selectTool, poly: polyTool, free: freeTool, shape: shapeTool, hand: {},
   brush: rasTool('brush'), smudge: rasTool('smudge'), blur: rasTool('blur'),
   eraser: {
     E() { return doc.type === 'vector' ? vEraser : rasEraser; },
