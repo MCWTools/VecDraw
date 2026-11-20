@@ -177,16 +177,29 @@ const freeTool = {
   },
   up(p) {
     const raw = this.raw; this.raw = null; if (!raw) return;
+    if (ST.fmode === 'brush') {   // Brush: nét hở, luôn là line
+      if (raw.length < 2) return;
+      const res = processFreehand(raw, view.s, 'smooth', false);
+      const fs = newShape(res.nodes, false); fs.mode = 'line'; fs.closed = false; fs.round = 0; commitShape(fs); return;
+    }
+    // Lasso: vòng kín; Fill (nút bucket) bật = tô, tắt = chỉ viền
     const fill = ST.mode === 'fill';
-    const res = processFreehand(raw, view.s, ST.free, fill);
-    if (fill && res.nodes.length < 3) { toast('Vẽ vòng kín để fill'); requestRender(); return; }
-    { const fs = newShape(res.nodes, fill || res.closed); fs.round = 0; commitShape(fs); }
+    const res = processFreehand(raw, view.s, ST.free, true);
+    if (res.nodes.length < 3) {
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const q of raw) { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }
+      if (raw.length >= 3 && Math.max(x1 - x0, y1 - y0) * view.s > 12) {
+        const idx = rdpIdx(raw, 0.3 / view.s); const nodes = idx.map(i => [raw[i][0], raw[i][1], 1]);
+        if (nodes.length >= 3) { const fs = newShape(nodes, true); fs.round = 0; commitShape(fs); return; }
+      }
+      toast('Vẽ vòng kín (' + raw.length + ' điểm)'); requestRender(); return;
+    }
+    const fs = newShape(res.nodes, true); fs.round = 0; if (!fill) fs.closed = true; commitShape(fs);
   },
   cancel() { this.raw = null; },
   overlay(c) {
     if (!this.raw || this.raw.length < 1) return;
     const idx = rdpIdx(this.raw, 0.6 / view.s), nodes = idx.map(i => [this.raw[i][0], this.raw[i][1], 0]);
-    const s = newShape(nodes, ST.mode === 'fill', 7); c.save();
+    const s = newShape(nodes, ST.fmode !== 'brush', 7); if (ST.fmode === 'brush') s.mode = 'line'; c.save();
     c.setTransform(DPR * view.s, 0, 0, DPR * view.s, view.ox * DPR, view.oy * DPR); drawShape(c, s); c.restore();
   }
 };
@@ -286,7 +299,7 @@ const selectTool = {
         if (i >= 0) {
           sel.ni = i; const before = snap(), shape = swapClone(t.layer, t.shape);
           xf = { node: true, t: { kind: 'shape', layer: t.layer, shape }, i, n0: [shape.nodes[i][0], shape.nodes[i][1]], p0: p, s0: [p.sx, p.sy], before, moved: false };
-          uiRefresh(); requestRender(); return;
+          uiRefresh(); if (typeof nudgeSync === 'function') nudgeSync(); requestRender(); return;
         }
       } else {
         const h = hitHandle(t.corners, p);
@@ -362,7 +375,7 @@ function doubleTap(p) {
   if (i >= 0) { sel.ni = i; toggleNodeCorner(); return; }
   addNodeAt(s, p.x, p.y);
 }
-function setSelMode(m) { if (sel) { sel.mode = m; sel.ni = -1; uiRefresh(true); requestRender(); } }
+function setSelMode(m) { if (sel) { sel.mode = m; sel.ni = -1; uiRefresh(true); requestRender(); if (typeof nudgeSync === 'function') nudgeSync(); } }
 function addNodeAt(s, x, y) {
   const near = nearestOnPath(s, x, y); if (!near || near.d > 16 / view.s) return false;
   const L = layerById(sel.lid), before = snap(), ns = cloneShape(s), a = ns.nodes[near.i], b = ns.nodes[(near.i + 1) % ns.nodes.length];

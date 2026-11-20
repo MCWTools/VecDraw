@@ -80,19 +80,26 @@ function buildOptions() {
   const S = (k, v) => { if (useSel) editSel(k, v); else { ST[k] = v; requestRender(); } };
   const add = (...c) => P.append(O.row(...c));
   const shapeControls = (isPoly) => {
+    const brushMode = tool === 'free' && !useSel && ST.fmode === 'brush', modeNow = brushMode ? 'line' : G('mode');
+    if (tool === 'free' && !useSel) {
+      const bk = el('button', { class: 'colorbtn bucketbtn' + (ST.mode === 'fill' ? ' on' : ''), title: 'Fill (tô kín)', onclick: () => { ST.mode = ST.mode === 'fill' ? 'line' : 'fill'; buildOptions(); }, html: ic('bucket') });
+      add(O.seg([['lasso', 'Lasso'], ['brush', 'Brush']], () => ST.fmode, v => { ST.fmode = v; buildOptions(); }), ...(brushMode ? [] : [bk]),
+        O.color(() => G('color'), v => S('color', v), 'Màu', { get: () => G('opacity'), set: v => S('opacity', v) }),
+        gradBtn({ get: G, set: S, valid: () => !selShape() }, buildOptions));
+    } else
     add(O.seg([['fill', 'Fill'], ['line', 'Line']], () => G('mode'), v => { S('mode', v); buildOptions(); }),
       O.color(() => G('color'), v => S('color', v), 'Màu', { get: () => G('opacity'), set: v => S('opacity', v) }),
       gradBtn({ get: G, set: S, valid: useSel ? (sid => () => { const q = selShape(); return !!q && q.id === sid; })(s.id) : () => !selShape() }, buildOptions));
-    if (G('mode') === 'line') {
+    if (modeNow === 'line') {
       add(O.slider('Độ dày', 1, 150, 1, () => G('width'), v => S('width', v), v => v));
       add(O.seg([['pen', 'Pen'], ['pencil', 'Pencil'], ['marker', 'Marker'], ['dashed', 'Đứt'], ['dotted', 'Chấm']], () => G('brush'), v => S('brush', v)));
     }
     add(O.slider('Trong suốt', 5, 100, 1, () => Math.round(G('opacity') * 100), v => S('opacity', v / 100), v => v + '%'));
     if (isPoly) add(O.slider('Bo góc', 0, clamp(Math.round(Math.min(doc.w, doc.h) / 4), 20, 300), 1, () => G('round') || 0, v => S('round', v), v => v ? v + 'px' : 'Tắt'));
     const t = [];
-    if (G('mode') === 'line') t.push(O.toggle('Nối đầu-cuối', () => G('closed'), v => S('closed', v)));
+    if (modeNow === 'line' && !(tool === 'free' && !useSel)) t.push(O.toggle('Nối đầu-cuối', () => G('closed'), v => S('closed', v)));
     if (isPoly) t.push(O.toggle('Cong mượt', () => useSel ? G('curve') : ST.curve, v => { if (useSel) editSel('curve', v); else { ST.curve = v; requestRender(); } }));
-    if (tool === 'free') t.push(O.seg([['auto', 'Tự động'], ['smooth', 'Mượt'], ['straight', 'Thẳng'], ['raw', 'Thô']], () => ST.free, v => { ST.free = v; }));
+    if (tool === 'free' && !brushMode) t.push(O.seg([['auto', 'Tự động'], ['smooth', 'Mượt'], ['straight', 'Thẳng'], ['raw', 'Thô']], () => ST.free, v => { ST.free = v; }));
     if (t.length) add(...t);
   };
   if (useSel) { shapeControls(true); if (s) add(O.note('Kéo chấm = sửa điểm · kéo thân hình = di chuyển · chạm đúp vào cạnh = thêm điểm · nút "Khung" = resize / xoay')); }
@@ -174,6 +181,7 @@ function uiRefresh(full) {
   $('#btnRedo').disabled = !(Hist.r.length || (pend && pend.redo.length));
   $$('#toolbar .tb').forEach(b => b.classList.toggle('on', b.dataset.id === tool));
   buildPendBar(); buildSelBar(); buildMapTabs();
+  nudgeSync();
   if (!sliderBusy) { if (full) buildOptions(); buildLayers(); }
 }
 let sliderBusy = false;
@@ -501,7 +509,37 @@ async function saveProjectFile() {
 
 /* ---------------- gradient editor ---------------- */
 let gradEd = null;
-function editorsSync() { if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); if (gradEd) gradEd.sync(); }
+function editorsSync() { if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); if (gradEd) gradEd.sync(); nudgeSync(); }
+/* ---- bàn phím mũi tên: nhích hình / điểm đang chọn theo số pixel ---- */
+let nudgeEl = null;
+function nudgeMove(dx, dy) {
+  const s = selShape(); if (!s) return;
+  const st = Math.max(0.1, ST.step || 1);
+  if (sel.mode === 'nodes' && sel.ni >= 0 && s.nodes[sel.ni]) {
+    editSelNodes(ns => { const n = ns[sel.ni]; n[0] += dx * st; n[1] += dy * st; });
+  } else editSelNodes(ns => ns.forEach(n => { n[0] += dx * st; n[1] += dy * st; }));
+}
+function editSelNodes(fn) {
+  const s = selShape(); if (!s) return;
+  const L = layerById(sel.lid), before = snap(), ns = cloneShape(s); fn(ns.nodes);
+  L.shapes = L.shapes.map(x => x === s ? ns : x); touch(L);
+  pushHist({ kind: 'doc', before, after: snap() }, 'nudge:' + s.id + ':' + (sel.ni | 0)); requestRender();
+}
+function nudgeSync() {
+  const s = typeof selShape === 'function' && doc && tool === 'select' ? selShape() : null;
+  if (!s) { if (nudgeEl) nudgeEl.remove(), nudgeEl = null; return; }
+  if (!nudgeEl) {
+    const inp = el('input', { type: 'text', inputmode: 'decimal', class: 'txt nstep', value: String(ST.step || 1) });
+    inp.addEventListener('change', () => { const x = parseFloat(String(inp.value).replace(',', '.')); ST.step = x > 0 ? x : 1; inp.value = String(ST.step); });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } e.stopPropagation(); });
+    const ab = (cls, ch, dx, dy) => el('button', { class: 'nb ' + cls, onclick: () => nudgeMove(dx, dy) }, ch);
+    nudgeEl = el('div', { class: 'nudge' }, el('div', { class: 'nlab' }), ab('nu', '▲', 0, -1), ab('nl', '◀', -1, 0), inp, ab('nr', '▶', 1, 0), ab('nd', '▼', 0, 1));
+    document.body.append(nudgeEl);
+  }
+  const node = sel.mode === 'nodes' && sel.ni >= 0 && s.nodes[sel.ni];
+  $('.nlab', nudgeEl).textContent = node ? 'Điểm · px' : 'Hình · px';
+  nudgeEl.classList.toggle('node', !!node);
+}
 const accStops = acc => shapeStops({ stops: acc.get('stops'), color: acc.get('color'), color2: acc.get('color2') });
 const stopsCss = (st, deg) => 'linear-gradient(' + deg + 'deg,' + st.map(s => s.c + ' ' + (s.t * 100).toFixed(1) + '%').join(',') + ')';
 function gradColorAt(st, t) {

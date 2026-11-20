@@ -100,7 +100,7 @@ const ic = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 let doc = null, REV = 1, liveStroke = null;
 const view = { s: 1, ox: 0, oy: 0 };
 // style cho shape (vector + shape tools của raster)
-const ST = { mode: 'line', color: '#1a1a1a', grad: false, color2: '#ff5b6b', stops: null, gAngle: 0, width: 6, opacity: 1, brush: 'pen', closed: true, curve: false, free: 'auto' };
+const ST = { mode: 'line', color: '#1a1a1a', grad: false, color2: '#ff5b6b', stops: null, gAngle: 0, width: 6, opacity: 1, brush: 'pen', closed: true, curve: false, free: 'auto', fmode: 'lasso', step: 1 };
 // style cho raster brush
 const RS = { size: 14, hard: 0.7, opacity: 1, style: 'soft', eSize: 30, eHard: 0.6, eOp: 1, sSize: 36, sStr: 0.55, bSize: 36, bStr: 0.5, tol: 24, contig: true, all: false };
 // vector eraser
@@ -369,6 +369,30 @@ function rdpIdx(pts, tol) {
   }
   const out = []; for (let i = 0; i < n; i++) if (keep[i]) out.push(i); return out;
 }
+/* chế độ Thẳng: gộp điểm sát nhau, bỏ điểm gần thẳng hàng, dóng cạnh gần ngang/dọc cho thật ngang/dọc */
+function cleanStraight(nodes, closed, zoom) {
+  const near = 12 / zoom;
+  for (let pass = 0; pass < 3; pass++) {
+    let ch = false;
+    for (let i = 0; i < nodes.length && nodes.length > 3; i++) {
+      const n = nodes.length, a = nodes[(i - 1 + n) % n], b = nodes[i], c2 = nodes[(i + 1) % n];
+      if (!closed && (i === 0 || i === n - 1)) continue;
+      const d1 = hypot(b[0] - a[0], b[1] - a[1]), d2 = hypot(c2[0] - b[0], c2[1] - b[1]);
+      let kill = d1 < near || d2 < near;
+      if (!kill && d1 > 1e-6 && d2 > 1e-6) { const cs = ((b[0] - a[0]) * (c2[0] - b[0]) + (b[1] - a[1]) * (c2[1] - b[1])) / (d1 * d2); kill = cs > 0.985; }  // lệch < ~10°
+      if (kill) { nodes.splice(i, 1); i--; ch = true; }
+    }
+    if (!ch) break;
+  }
+  const n = nodes.length, E = closed ? n : n - 1;
+  for (let i = 0; i < E; i++) {
+    const a = nodes[i], b = nodes[(i + 1) % n], dx = b[0] - a[0], dy = b[1] - a[1];
+    if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) continue;
+    const ang = Math.atan2(Math.abs(dy), Math.abs(dx)) * 180 / Math.PI;
+    if (ang < 8) { const y = (a[1] + b[1]) / 2; a[1] = b[1] = y; }
+    else if (ang > 82) { const x = (a[0] + b[0]) / 2; a[0] = b[0] = x; }
+  }
+}
 /* ---- freehand -> nodes: tự phát hiện góc gấp / đoạn cong ---- */
 function processFreehand(raw, zoom, mode, forceClose) {
   let pts = [raw[0]];
@@ -381,10 +405,13 @@ function processFreehand(raw, zoom, mode, forceClose) {
     closed = true;
     if (hypot(first[0] - last[0], first[1] - last[1]) < 20 / zoom && pts.length > 3) pts = pts.slice(0, -1);
   }
-  const tol = (mode === 'raw' ? 0.8 : mode === 'smooth' ? 3 : mode === 'straight' ? 3.2 : 2.2) / zoom;
+  const tol = (mode === 'raw' ? 0.8 : mode === 'smooth' ? 3 : mode === 'straight' ? 6 : 2.2) / zoom;
   const idx = rdpIdx(pts, tol);
   const nodes = idx.map(i => [pts[i][0], pts[i][1], 0]);
-  if (mode === 'straight') nodes.forEach(n => n[2] = 1);
+  if (mode === 'straight') {
+    nodes.forEach(n => n[2] = 1);
+    cleanStraight(nodes, closed, zoom);
+  }
   else if (mode === 'auto') {
     const W = 15 / zoom, n = pts.length;
     const walk = (i, dir) => {
