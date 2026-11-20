@@ -186,6 +186,35 @@ function segs(nodes, closed) {
   }
   return out;
 }
+
+/* Bo góc: chỉ bo những góc nhọn nằm giữa 2 cạnh thẳng; cung = 1 đoạn Bezier tiếp xúc đúng 2 cạnh */
+function segsOf(s) {
+  const base = segs(s.nodes, s.closed), r = +s.round || 0, n = s.nodes.length;
+  if (!(r > 0) || n < 3 || base.length < 2) return base;
+  const nd = s.nodes, cut = new Array(n).fill(0), info = new Array(n).fill(null);
+  const along = (p, q, d) => { const L = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1; return [p[0] + (q[0] - p[0]) * d / L, p[1] + (q[1] - p[1]) * d / L, 1]; };
+  for (let i = 0; i < n; i++) {
+    if (!s.closed && (i === 0 || i === n - 1)) continue;
+    const V = nd[i], A = nd[(i - 1 + n) % n], B = nd[(i + 1) % n];
+    if (!(V[2] && A[2] && B[2])) continue;
+    const lu = Math.hypot(A[0] - V[0], A[1] - V[1]), lw = Math.hypot(B[0] - V[0], B[1] - V[1]);
+    if (lu < 1e-6 || lw < 1e-6) continue;
+    const cos = Math.max(-1, Math.min(1, ((A[0] - V[0]) * (B[0] - V[0]) + (A[1] - V[1]) * (B[1] - V[1])) / (lu * lw))), phi = Math.acos(cos);
+    if (phi > 3.1 || phi < 0.02) continue;
+    const d = Math.min(r / Math.tan(phi / 2), lu / 2, lw / 2);
+    if (d < 1e-4) continue;
+    const f = (4 / 3) * Math.tan((Math.PI - phi) / 4) * Math.tan(phi / 2), P1 = along(V, A, d), P2 = along(V, B, d);
+    cut[i] = d; info[i] = { P1, P2, c1: [P1[0] + (V[0] - P1[0]) * f, P1[1] + (V[1] - P1[1]) * f], c2: [P2[0] + (V[0] - P2[0]) * f, P2[1] + (V[1] - P2[1]) * f] };
+  }
+  const out = [];
+  for (let i = 0; i < base.length; i++) {
+    const g = base[i], j = (i + 1) % n;
+    if (info[i]) out.push({ a: info[i].P1, b: info[i].P2, c1: info[i].c1, c2: info[i].c2, straight: false });
+    if (g.straight) out.push({ a: info[i] ? info[i].P2 : g.a, b: info[j] ? info[j].P1 : g.b, straight: true });
+    else out.push(g);
+  }
+  return out;
+}
 function bez(g, t) {
   const u = 1 - t, a = g.a, b = g.b, c1 = g.c1, c2 = g.c2, w0 = u * u * u, w1 = 3 * u * u * t, w2 = 3 * u * t * t, w3 = t * t * t;
   return [w0 * a[0] + w1 * c1[0] + w2 * c2[0] + w3 * b[0], w0 * a[1] + w1 * c1[1] + w2 * c2[1] + w3 * b[1]];
@@ -197,10 +226,11 @@ function getPath(s) {
   const c = gcache(s); if (c.p) return c.p;
   const p = new Path2D(), n = s.nodes.length;
   if (n) {
-    p.moveTo(s.nodes[0][0], s.nodes[0][1]);
+    const SG = n > 1 ? segsOf(s) : null, st = SG ? SG[0].a : s.nodes[0];
+    p.moveTo(st[0], st[1]);
     if (n === 1) p.lineTo(s.nodes[0][0] + 0.01, s.nodes[0][1]);
     else {
-      for (const g of segs(s.nodes, s.closed)) { if (g.straight) p.lineTo(g.b[0], g.b[1]); else p.bezierCurveTo(g.c1[0], g.c1[1], g.c2[0], g.c2[1], g.b[0], g.b[1]); }
+      for (const g of SG) { if (g.straight) p.lineTo(g.b[0], g.b[1]); else p.bezierCurveTo(g.c1[0], g.c1[1], g.c2[0], g.c2[1], g.b[0], g.b[1]); }
       if (s.closed) p.closePath();
     }
   }
@@ -211,8 +241,8 @@ function getFlat(s) {
   const out = [], n = s.nodes.length;
   if (n === 1) out.push([s.nodes[0][0], s.nodes[0][1]]);
   else if (n > 1) {
-    out.push([s.nodes[0][0], s.nodes[0][1]]);
-    for (const g of segs(s.nodes, s.closed)) { if (g.straight) out.push([g.b[0], g.b[1]]); else for (let k = 1; k <= 12; k++) out.push(bez(g, k / 12)); }
+    const SG = segsOf(s); out.push([SG[0].a[0], SG[0].a[1]]);
+    for (const g of SG) { if (g.straight) out.push([g.b[0], g.b[1]]); else for (let k = 1; k <= 12; k++) out.push(bez(g, k / 12)); }
   }
   c.fl = out; return out;
 }
@@ -474,9 +504,9 @@ function sampleColorAt(x, y) {
 function shapeD(s) {
   const n = s.nodes.length; if (!n) return '';
   const f = v => +v.toFixed(2);
-  let d = `M${f(s.nodes[0][0])} ${f(s.nodes[0][1])}`;
-  if (n === 1) return d + ` l0.01 0`;
-  for (const g of segs(s.nodes, s.closed)) d += g.straight ? `L${f(g.b[0])} ${f(g.b[1])}` : `C${f(g.c1[0])} ${f(g.c1[1])} ${f(g.c2[0])} ${f(g.c2[1])} ${f(g.b[0])} ${f(g.b[1])}`;
+  if (n === 1) return `M${f(s.nodes[0][0])} ${f(s.nodes[0][1])} l0.01 0`;
+  const SG = segsOf(s); let d = `M${f(SG[0].a[0])} ${f(SG[0].a[1])}`;
+  for (const g of SG) d += g.straight ? `L${f(g.b[0])} ${f(g.b[1])}` : `C${f(g.c1[0])} ${f(g.c1[1])} ${f(g.c2[0])} ${f(g.c2[1])} ${f(g.b[0])} ${f(g.b[1])}`;
   return d + (s.closed ? 'Z' : '');
 }
 function exportSVG(d, W, H, bgOverride) {

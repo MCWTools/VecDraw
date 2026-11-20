@@ -63,9 +63,9 @@ const O = {
   toggle(label, get, set) {
     const b = el('button', { class: 'pill' + (get() ? ' on' : ''), onclick: () => { const v = !get(); set(v); b.classList.toggle('on', v); } }, label); return b;
   },
-  color(get, set, label) {
+  color(get, set, label, alpha) {
     const sw = el('span', { class: 'sw', style: 'background:' + get() });
-    return el('button', { class: 'colorbtn', onclick: () => openColorPicker(get(), v => { set(v); sw.style.background = v; }) }, sw, label ? el('span', null, label) : null);
+    return el('button', { class: 'colorbtn', onclick: () => openColorPicker(get(), v => { set(v); sw.style.background = v; }, alpha ? { alpha } : null) }, sw, label ? el('span', null, label) : null);
   },
   note(t) { return el('div', { class: 'note' }, t); },
   row(...c) { return el('div', { class: 'orow' }, ...c); }
@@ -81,7 +81,7 @@ function buildOptions() {
   const add = (...c) => P.append(O.row(...c));
   const shapeControls = (isPoly) => {
     add(O.seg([['fill', 'Fill'], ['line', 'Line']], () => G('mode'), v => { S('mode', v); buildOptions(); }),
-      O.color(() => G('color'), v => S('color', v), 'Màu'),
+      O.color(() => G('color'), v => S('color', v), 'Màu', { get: () => G('opacity'), set: v => S('opacity', v) }),
       O.toggle('Gradient', () => G('grad'), v => { S('grad', v); buildOptions(); }));
     if (G('grad')) add(O.color(() => G('color2'), v => S('color2', v), 'Màu 2'), O.slider('Góc', 0, 360, 5, () => G('gAngle'), v => S('gAngle', v), v => v + '°'));
     if (G('mode') === 'line') {
@@ -89,13 +89,14 @@ function buildOptions() {
       add(O.seg([['pen', 'Pen'], ['pencil', 'Pencil'], ['marker', 'Marker'], ['dashed', 'Đứt'], ['dotted', 'Chấm']], () => G('brush'), v => S('brush', v)));
     }
     add(O.slider('Trong suốt', 5, 100, 1, () => Math.round(G('opacity') * 100), v => S('opacity', v / 100), v => v + '%'));
+    if (isPoly) add(O.slider('Bo góc', 0, clamp(Math.round(Math.min(doc.w, doc.h) / 4), 20, 300), 1, () => G('round') || 0, v => S('round', v), v => v ? v + 'px' : 'Tắt'));
     const t = [];
     if (G('mode') === 'line') t.push(O.toggle('Nối đầu-cuối', () => G('closed'), v => S('closed', v)));
-    if (isPoly) t.push(O.toggle('Cong mượt', () => useSel ? G('curve') : ST.curve, v => { if (useSel) editSel('curve', v); else ST.curve = v; }));
+    if (isPoly) t.push(O.toggle('Cong mượt', () => useSel ? G('curve') : ST.curve, v => { if (useSel) editSel('curve', v); else { ST.curve = v; requestRender(); } }));
     if (tool === 'free') t.push(O.seg([['auto', 'Tự động'], ['smooth', 'Mượt'], ['straight', 'Thẳng'], ['raw', 'Thô']], () => ST.free, v => { ST.free = v; }));
     if (t.length) add(...t);
   };
-  if (useSel) { shapeControls(true); if (s) add(O.note('Chạm đúp: vào chế độ sửa điểm · Kéo góc = resize · chấm xanh = xoay')); }
+  if (useSel) { shapeControls(true); if (s) add(O.note('Kéo chấm = sửa điểm · kéo thân hình = di chuyển · chạm đúp vào cạnh = thêm điểm · nút "Khung" = resize / xoay')); }
   else if (tool === 'select') {
     const L = activeLayer();
     if (L && L.type === 'img') {
@@ -262,31 +263,71 @@ function recentColors() { try { return JSON.parse(localStorage.getItem('vd_recen
 function pushRecent(c) { try { const r = recentColors().filter(x => x !== c); r.unshift(c); localStorage.setItem('vd_recent', JSON.stringify(r.slice(0, 14))); } catch (_) { } }
 function colorPickerOpen() { return !!cp; }
 function closeColorPicker() { if (cp) cp.close(); }
-function openColorPicker(hex, onChange) {
-  closeColorPicker();
-  let [h, s, v] = rgb2hsv(...hex2rgb(hex));
-  const cvs = el('canvas', { class: 'svc', width: 300, height: 170 }), hue = el('input', { type: 'range', min: 0, max: 360, step: 1, value: h, class: 'hue' });
-  const hexIn = el('input', { type: 'text', class: 'txt hex', value: hex, maxlength: 7 }), prev = el('span', { class: 'sw big', style: 'background:' + hex });
+/* Bảng chọn màu: overlay vuông 1:1 theo toạ độ chia theo tỉ lệ (0..1) của overlay
+   ô SV (chọn đậm/nhạt+sáng/tối): x 0.01–0.90, y 0.01–0.90   · slider màu (hue): x 0.91–0.99, y 0.01–0.90
+   slider đậm nhạt (alpha):       x 0.01–0.90, y 0.91–0.99   · ô màu đang chọn + hút màu: 0.91–0.99 × 0.91–0.99 */
+function openColorPicker(hex, onChange, opts) {
+  closeColorPicker(); opts = opts || {};
+  const al = opts.alpha || null;
+  let [h, s, v] = rgb2hsv(...hex2rgb(hex)), a = al ? clamp(+al.get(), 0, 1) : 1;
+  const R = (cls, x0, y0, x1, y1) => el('div', { class: 'cp2r ' + cls, style: `left:${x0 * 100}%;top:${y0 * 100}%;width:${(x1 - x0) * 100}%;height:${(y1 - y0) * 100}%` });
+  const sv = R('cp2sv', 0.01, 0.01, 0.9, 0.9), hu = R('cp2hu', 0.91, 0.01, 0.99, 0.9), at = R('cp2al', 0.01, 0.91, 0.9, 0.99), sw = R('cp2sw', 0.91, 0.91, 0.99, 0.99);
+  const knob = el('div', { class: 'cp2knob' }), hthumb = el('div', { class: 'cp2bar h' }), athumb = el('div', { class: 'cp2bar a' });
+  sv.append(knob); hu.append(hthumb); at.append(athumb);
+  const swFill = el('div', { class: 'cp2swfill' }), swIco = el('span', { class: 'cp2ico', html: ic('dropper') });
+  sw.append(swFill, swIco);
+  if (!al) at.classList.add('off');
+  const root = el('div', { class: 'cp2' }, sv, hu, at, sw);
   const cur = () => rgb2hex(...hsv2rgb(h, s, v));
-  const draw = () => {
-    const c = cvs.getContext('2d'), w = cvs.width, hh = cvs.height;
-    c.fillStyle = `hsl(${h},100%,50%)`; c.fillRect(0, 0, w, hh);
-    let g = c.createLinearGradient(0, 0, w, 0); g.addColorStop(0, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g; c.fillRect(0, 0, w, hh);
-    g = c.createLinearGradient(0, 0, 0, hh); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, '#000'); c.fillStyle = g; c.fillRect(0, 0, w, hh);
-    c.beginPath(); c.arc(s * w, (1 - v) * hh, 9, 0, 6.283); c.lineWidth = 3; c.strokeStyle = '#fff'; c.stroke(); c.lineWidth = 1.2; c.strokeStyle = '#000'; c.stroke();
+  const paint = () => {
+    const c = cur(), [r, g, b] = hex2rgb(c);
+    sv.style.backgroundImage = `linear-gradient(to top,#000,rgba(0,0,0,0)),linear-gradient(to right,#fff,hsl(${h},100%,50%))`;
+    knob.style.left = (s * 100) + '%'; knob.style.top = ((1 - v) * 100) + '%'; knob.style.background = c;
+    hthumb.style.top = (h / 360 * 100) + '%';
+    at.style.backgroundImage = `linear-gradient(to right,rgba(${r},${g},${b},0),rgb(${r},${g},${b})),repeating-conic-gradient(#8a8f9c 0 25%,#c9ccd4 0 50%)`;
+    at.style.backgroundSize = '100% 100%,14px 14px'; athumb.style.left = (a * 100) + '%';
+    swFill.style.background = `linear-gradient(rgba(${r},${g},${b},${a}),rgba(${r},${g},${b},${a})),repeating-conic-gradient(#8a8f9c 0 25%,#c9ccd4 0 50%) 0 0/10px 10px`;
+    swIco.style.color = (v > 0.6 && s < 0.5) ? '#222' : '#fff';
   };
-  const apply = (fromHex) => { const c = cur(); if (!fromHex) hexIn.value = c; prev.style.background = c; draw(); onChange(c); };
-  const pick = e => { const r = cvs.getBoundingClientRect(); s = clamp((e.clientX - r.left) / r.width, 0, 1); v = 1 - clamp((e.clientY - r.top) / r.height, 0, 1); apply(); };
-  cvs.addEventListener('pointerdown', e => { e.preventDefault(); cvs.setPointerCapture(e.pointerId); pick(e); const mv = ev => pick(ev), up = () => { cvs.removeEventListener('pointermove', mv); cvs.removeEventListener('pointerup', up); }; cvs.addEventListener('pointermove', mv); cvs.addEventListener('pointerup', up); });
-  hue.addEventListener('input', () => { h = parseFloat(hue.value); apply(); });
-  hexIn.addEventListener('input', () => { let t = hexIn.value.trim(); if (!t.startsWith('#')) t = '#' + t; if (/^#[0-9a-fA-F]{6}$/.test(t)) { [h, s, v] = rgb2hsv(...hex2rgb(t)); hue.value = h; apply(true); } });
-  const sw = c => el('button', { class: 'swatch', style: 'background:' + c, onclick: () => { [h, s, v] = rgb2hsv(...hex2rgb(c)); hue.value = h; apply(); } });
-  const rec = recentColors();
-  const body = el('div', { class: 'cpbody' }, cvs, hue, el('div', { class: 'cprow' }, prev, hexIn, el('button', { class: 'btn primary', onclick: () => closeColorPicker() }, 'OK')),
-    el('div', { class: 'swgrid' }, PALETTE.map(sw)), rec.length ? el('div', { class: 'swgrid' }, rec.map(sw)) : null,
-    el('div', { class: 'note' }, 'Enter = chốt màu' + (pend ? ' và vẽ hình' : '')));
-  const m = openModal(null, body, null, { cls: 'sheetmodal cpm', onClose: () => { pushRecent(cur()); cp = null; } });
-  cp = { close: m.close }; draw();
+  const emit = () => { paint(); onChange(cur()); if (al) al.set(a); };
+  const drag = (elx, fn, onDown, onUp) => {
+    elx.addEventListener('pointerdown', e => {
+      if (elx.classList.contains('off')) return;
+      e.preventDefault(); e.stopPropagation(); elx.setPointerCapture(e.pointerId); if (onDown) onDown();
+      const rect = elx.getBoundingClientRect(), pos = ev => fn(clamp((ev.clientX - rect.left) / rect.width, 0, 1), clamp((ev.clientY - rect.top) / rect.height, 0, 1));
+      pos(e);
+      const mv = ev => pos(ev), up = () => { elx.removeEventListener('pointermove', mv); elx.removeEventListener('pointerup', up); elx.removeEventListener('pointercancel', up); if (onUp) onUp(); };
+      elx.addEventListener('pointermove', mv); elx.addEventListener('pointerup', up); elx.addEventListener('pointercancel', up);
+    });
+  };
+  drag(sv, (x, y) => { s = x; v = 1 - y; emit(); }, () => knob.classList.add('drag'), () => knob.classList.remove('drag'));
+  drag(hu, (x, y) => { h = y * 360; emit(); });
+  drag(at, (x) => { a = x; emit(); });
+  // ô màu đang chọn: bấm vào để chuyển sang chế độ chạm đâu lấy màu đó
+  sw.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); startPick(m.box.parentNode, c => { [h, s, v] = rgb2hsv(...hex2rgb(c)); emit(); }); });
+  const m = openModal(null, root, null, { cls: 'cp2m', onClose: () => { pushRecent(cur()); cp = null; if (opts.alpha && doc) buildOptions(); } });
+  cp = { close: m.close }; paint();
+}
+/* Chế độ hút màu: ẩn overlay, chạm bất kỳ đâu trên hình để lấy màu rồi quay lại overlay */
+function startPick(back, apply) {
+  back.style.display = 'none';
+  let down = false;
+  const hint = el('div', { class: 'pickhint' }, el('span', null, '💧 Chạm vào bất kỳ đâu trên hình để lấy màu'), el('button', { class: 'btn sm', onclick: () => stop() }, 'Huỷ'));
+  document.body.append(hint);
+  const sample = e => { if (!doc) return; const p = toDoc(e.clientX, e.clientY); if (p.x < 0 || p.y < 0 || p.x > doc.w || p.y > doc.h) return; const c = sampleColorAt(p.x, p.y); if (c) apply(c); };
+  const pd = e => {
+    if (hint.contains(e.target)) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.target === cv) { down = true; sample(e); }
+  };
+  const pm = e => { if (down) sample(e); };
+  const pu = e => { if (down) { down = false; stop(); } };
+  const ck = e => { if (!hint.contains(e.target)) { e.preventDefault(); e.stopPropagation(); } };
+  function stop() {
+    window.removeEventListener('pointerdown', pd, true); window.removeEventListener('pointermove', pm, true); window.removeEventListener('pointerup', pu, true); window.removeEventListener('click', ck, true);
+    hint.remove(); back.style.display = '';
+  }
+  window.addEventListener('pointerdown', pd, true); window.addEventListener('pointermove', pm, true); window.addEventListener('pointerup', pu, true); window.addEventListener('click', ck, true);
 }
 
 /* ---------------- home ---------------- */

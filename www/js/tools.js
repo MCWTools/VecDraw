@@ -104,7 +104,7 @@ function checkEditable(L) {
   return true;
 }
 function newShape(nodes, closed, seed) {
-  return { id: uid(), nodes, closed, mode: ST.mode, color: ST.color, grad: ST.grad, color2: ST.color2, gAngle: ST.gAngle, width: ST.width, opacity: ST.opacity, brush: ST.brush, seed: seed || ((Math.random() * 1e9) | 0) };
+  return { id: uid(), nodes, closed, mode: ST.mode, color: ST.color, grad: ST.grad, color2: ST.color2, gAngle: ST.gAngle, width: ST.width, opacity: ST.opacity, brush: ST.brush, round: ST.round || 0, seed: seed || ((Math.random() * 1e9) | 0) };
 }
 function commitShape(s) {
   let L = activeLayer(); if (!checkEditable(L)) return false;
@@ -125,7 +125,7 @@ function commitShape(s) {
 function pendShape() {
   if (!pend || !pend.pts.length) return null;
   const fill = ST.mode === 'fill';
-  return newShape(pend.pts.map(p => p.slice()), fill || ST.closed, pend.seed);
+  return newShape(pend.pts.map(p => [p[0], p[1], ST.curve ? 0 : 1]), fill || ST.closed, pend.seed);
 }
 function commitPending(silent) {
   if (!pend) return false;
@@ -155,7 +155,7 @@ const polyTool = {
       this.tap = null;
       const L = activeLayer(); if (!checkEditable(L)) return;
       if (!pend) pend = { pts: [], redo: [], seed: (Math.random() * 1e9) | 0 };
-      pend.pts.push([p.x, p.y, ST.curve ? 0 : 1]); pend.redo = [];
+      pend.pts.push([p.x, p.y]); pend.redo = [];
       requestRender(); uiRefresh(true);
     }
   },
@@ -180,7 +180,7 @@ const freeTool = {
     const fill = ST.mode === 'fill';
     const res = processFreehand(raw, view.s, ST.free, fill);
     if (fill && res.nodes.length < 3) { toast('Vẽ vòng kín để fill'); requestRender(); return; }
-    commitShape(newShape(res.nodes, fill || res.closed));
+    { const fs = newShape(res.nodes, fill || res.closed); fs.round = 0; commitShape(fs); }
   },
   cancel() { this.raw = null; },
   overlay(c) {
@@ -210,7 +210,7 @@ function pickAt(p) {
   }
   return null;
 }
-function selectShape(L, s) { sel = { lid: L.id, sid: s.id, mode: sel ? sel.mode : 'box', ni: -1 }; doc.active = L.id; uiRefresh(true); requestRender(); }
+function selectShape(L, s) { sel = { lid: L.id, sid: s.id, mode: sel ? sel.mode : 'nodes', ni: -1 }; doc.active = L.id; uiRefresh(true); requestRender(); }
 function handlePts(cs) {
   const S = cs.map(q => toScr(q[0], q[1])), mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const m = [mid(S[0], S[1]), mid(S[1], S[2]), mid(S[2], S[3]), mid(S[3], S[0])];
