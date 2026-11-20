@@ -104,7 +104,7 @@ function checkEditable(L) {
   return true;
 }
 function newShape(nodes, closed, seed) {
-  return { id: uid(), nodes, closed, mode: ST.mode, color: ST.color, grad: ST.grad, color2: ST.color2, gAngle: ST.gAngle, width: ST.width, opacity: ST.opacity, brush: ST.brush, round: ST.round || 0, seed: seed || ((Math.random() * 1e9) | 0) };
+  return { id: uid(), nodes, closed, mode: ST.mode, color: ST.color, grad: ST.grad, color2: ST.color2, stops: ST.stops, gAngle: ST.gAngle, width: ST.width, opacity: ST.opacity, brush: ST.brush, round: ST.round || 0, seed: seed || ((Math.random() * 1e9) | 0) };
 }
 function commitShape(s) {
   let L = activeLayer(); if (!checkEditable(L)) return false;
@@ -210,7 +210,7 @@ function pickAt(p) {
   }
   return null;
 }
-function selectShape(L, s) { sel = { lid: L.id, sid: s.id, mode: sel ? sel.mode : 'nodes', ni: -1 }; doc.active = L.id; uiRefresh(true); requestRender(); if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); }
+function selectShape(L, s) { sel = { lid: L.id, sid: s.id, mode: sel ? sel.mode : 'nodes', ni: -1 }; doc.active = L.id; uiRefresh(true); requestRender(); if (typeof editorsSync === 'function') editorsSync(); }
 function handlePts(cs) {
   const S = cs.map(q => toScr(q[0], q[1])), mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const m = [mid(S[0], S[1]), mid(S[1], S[2]), mid(S[2], S[3]), mid(S[3], S[0])];
@@ -272,7 +272,7 @@ function beginXf(t, key, p) {
   if (!t) return;
   const before = snap(); let shape = null;
   if (t.kind === 'shape') shape = swapClone(t.layer, t.shape);
-  xf = { t: Object.assign({}, t, { shape: shape || t.shape }), key, p0: p, s0: [p.sx, p.sy], cs0: t.corners.map(c => c.slice()), before, moved: false, orig: shape ? shape.nodes.map(n => n.slice()) : null };
+  xf = { t: Object.assign({}, t, { shape: shape || t.shape }), key, p0: p, s0: [p.sx, p.sy], cs0: t.corners.map(c => c.slice()), before, moved: false, orig: shape ? shape.nodes.map(n => n.slice()) : null, g0: shape ? (shape.gAngle || 0) : 0, r0: shape ? (shape.rot || 0) : 0 };
 }
 function hitNode(s, p) { let bi = -1, bd = 17; s.nodes.forEach((n, i) => { const q = toScr(n[0], n[1]), d = hypot(q[0] - p.sx, q[1] - p.sy); if (d < bd) { bd = d; bi = i; } }); return bi; }
 const lp = { t: 0, fired: false };
@@ -301,7 +301,7 @@ const selectTool = {
         lp.t = setTimeout(() => { if (xf && !xf.moved) { xf = null; lp.fired = true; shapeMenu(cx, cy); } }, 480);
       }
       else { sel = null; setActive(hit.L.id); beginXf(currentTarget(), 'move', p); }
-    } else if (sel) { sel = null; uiRefresh(true); if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); }
+    } else if (sel) { sel = null; uiRefresh(true); if (typeof editorsSync === 'function') editorsSync(); }
     requestRender();
   },
   move(p) {
@@ -311,7 +311,11 @@ const selectTool = {
     if (xf.node) { const n = xf.t.shape.nodes[xf.i]; n[0] = xf.n0[0] + (p.x - xf.p0.x); n[1] = xf.n0[1] + (p.y - xf.p0.y); invalidate(xf.t.shape); touch(xf.t.layer); requestRender(); return; }
     const t = xf.t, warp = t.kind === 'img' && XF.warp, cs = xformDrag(xf.key, xf.cs0, xf.p0, p, XF.lock, warp);
     if (t.kind === 'img') { t.layer.corners = cs; touch(t.layer); }
-    else { applyAffine(t.shape, xf.cs0, cs, xf.orig); touch(t.layer); }
+    else {
+      applyAffine(t.shape, xf.cs0, cs, xf.orig); touch(t.layer);
+      const da = (Math.atan2(cs[1][1] - cs[0][1], cs[1][0] - cs[0][0]) - Math.atan2(xf.cs0[1][1] - xf.cs0[0][1], xf.cs0[1][0] - xf.cs0[0][0])) * 180 / Math.PI;
+      t.shape.gAngle = normDeg(xf.g0 + da); t.shape.rot = normDeg(xf.r0 + da);
+    }
     requestRender();
   },
   up(p) {
@@ -402,11 +406,26 @@ function reorderSelected(dir) {
   });
   requestRender();
 }
+/* góc xoay: tự normalize về -179..180 */
+function normDeg(v) { v = ((+v || 0) % 360 + 360) % 360; if (v > 180) v -= 360; return Math.round(v * 100) / 100; }
+function rotateSelTo(v) {   // xoay shape tới góc tuyệt đối v (so với hướng ban đầu), quanh trọng tâm các điểm
+  const s = selShape(); if (!s) return; const target = normDeg(v), d = (target - (s.rot || 0)) * Math.PI / 180;
+  if (!d) return;
+  const L = layerById(sel.lid), ns = cloneShape(s), n = ns.nodes.length;
+  let cx = 0, cy = 0; ns.nodes.forEach(p => { cx += p[0]; cy += p[1]; }); cx /= n; cy /= n;
+  const co = Math.cos(d), si = Math.sin(d);
+  ns.nodes.forEach(p => { const x = p[0] - cx, y = p[1] - cy; p[0] = cx + x * co - y * si; p[1] = cy + x * si + y * co; });
+  ns.gAngle = normDeg((s.gAngle || 0) + (target - (s.rot || 0)));
+  ns.rot = target;
+  const before = snap(); L.shapes = L.shapes.map(q => q === s ? ns : q); touch(L);
+  pushHist({ kind: 'doc', before, after: snap() }, 'rot:' + s.id); requestRender();
+}
 function flipSel(h) {
   const s = selShape();
   if (s) {
     const b = getBBox(s), L = layerById(sel.lid), ns = cloneShape(s);
     ns.nodes.forEach(n => { if (h) n[0] = b.x0 + b.x1 - n[0]; else n[1] = b.y0 + b.y1 - n[1]; });
+    ns.rot = normDeg(h ? 180 - (s.rot || 0) : -(s.rot || 0)); ns.gAngle = normDeg(h ? 180 - (s.gAngle || 0) : -(s.gAngle || 0));   // giữ góc xoay hiển thị khớp sau khi lật
     withHist(() => { L.shapes = L.shapes.map(x => x === s ? ns : x); touch(L); });
   } else {
     const L = activeLayer(); if (!L || L.type !== 'img') return;

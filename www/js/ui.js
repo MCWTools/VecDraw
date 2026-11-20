@@ -82,8 +82,7 @@ function buildOptions() {
   const shapeControls = (isPoly) => {
     add(O.seg([['fill', 'Fill'], ['line', 'Line']], () => G('mode'), v => { S('mode', v); buildOptions(); }),
       O.color(() => G('color'), v => S('color', v), 'Màu', { get: () => G('opacity'), set: v => S('opacity', v) }),
-      O.toggle('Gradient', () => G('grad'), v => { S('grad', v); buildOptions(); }));
-    if (G('grad')) add(O.color(() => G('color2'), v => S('color2', v), 'Màu 2'), O.slider('Góc', 0, 360, 5, () => G('gAngle'), v => S('gAngle', v), v => v + '°'));
+      gradBtn({ get: G, set: S, valid: useSel ? (sid => () => { const q = selShape(); return !!q && q.id === sid; })(s.id) : () => !selShape() }, buildOptions));
     if (G('mode') === 'line') {
       add(O.slider('Độ dày', 1, 150, 1, () => G('width'), v => S('width', v), v => v));
       add(O.seg([['pen', 'Pen'], ['pencil', 'Pencil'], ['marker', 'Marker'], ['dashed', 'Đứt'], ['dotted', 'Chấm']], () => G('brush'), v => S('brush', v)));
@@ -500,6 +499,93 @@ async function saveProjectFile() {
   await Native.saveBlob(safeName(doc.name) + '.vdraw', new Blob([JSON.stringify(data)], { type: 'application/json' }));
 }
 
+/* ---------------- gradient editor ---------------- */
+let gradEd = null;
+function editorsSync() { if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); if (gradEd) gradEd.sync(); }
+const accStops = acc => shapeStops({ stops: acc.get('stops'), color: acc.get('color'), color2: acc.get('color2') });
+const stopsCss = (st, deg) => 'linear-gradient(' + deg + 'deg,' + st.map(s => s.c + ' ' + (s.t * 100).toFixed(1) + '%').join(',') + ')';
+function gradColorAt(st, t) {
+  st = st.slice().sort((a, b) => a.t - b.t); if (t <= st[0].t) return st[0].c; if (t >= st[st.length - 1].t) return st[st.length - 1].c;
+  for (let i = 1; i < st.length; i++) if (t <= st[i].t) { const a = st[i - 1], b = st[i], k = (t - a.t) / ((b.t - a.t) || 1), A = hex2rgb(a.c), B = hex2rgb(b.c); return rgb2hex(A[0] + (B[0] - A[0]) * k, A[1] + (B[1] - A[1]) * k, A[2] + (B[2] - A[2]) * k); }
+  return st[0].c;
+}
+function gradBtn(acc, onDone) {
+  const on = !!acc.get('grad');
+  const sw = el('span', { class: 'gsw', style: 'background:' + (on ? stopsCss(accStops(acc), 90) : 'linear-gradient(90deg,#ff0000,#00ff00)') });
+  return el('button', { class: 'colorbtn gradbtn' + (on ? ' on' : ''), 'aria-label': 'Gradient', onclick: () => openGradientEditor(acc, onDone) }, sw);
+}
+function openGradientEditor(acc, onDone) {
+  if (gradEd) gradEd.close();
+  let uidn = 0;
+  const base = acc.get('stops') || acc.get('grad') ? accStops(acc) : [{ t: 0, c: acc.get('color') }, { t: 1, c: acc.get('color') }];
+  const S = base.map(s => ({ id: ++uidn, t: s.t, c: s.c })).sort((a, b) => a.t - b.t);
+  S[0].t = 0; S[S.length - 1].t = 1;
+  const FIRST = S[0].id, LAST = S[S.length - 1].id; let selId = FIRST;
+  const sorted = () => S.slice().sort((a, b) => a.t - b.t), curStop = () => S.find(s => s.id === selId) || S[0];
+  const ang = () => normDeg(acc.get('gAngle') || 0);
+  // UI
+  const strip = el('div', { class: 'gstrip' }), marks = el('div', { class: 'gmarks' }), wrap = el('div', { class: 'gstripwrap' }, strip, marks);
+  const selSw = el('span', { class: 'sw' }), tLab = el('span', { class: 'zval' });
+  const selBtn = el('button', { class: 'colorbtn', onclick: () => pickStop(curStop()) }, selSw, el('span', null, 'Màu điểm'));
+  const delBtn = el('button', { class: 'btn', onclick: () => { const c = curStop(); if (c.id === FIRST || c.id === LAST) return; S.splice(S.indexOf(c), 1); selId = FIRST; commit(); } }, 'Xoá điểm');
+  const knob = el('i', { class: 'gknob' }), inner = el('div', { class: 'gin' }), deg = el('input', { type: 'text', class: 'txt rotin', value: '0' });
+  const dial = el('div', { class: 'gdial' }, inner, knob);
+  const tog = O.toggle('Bật gradient', () => !!acc.get('grad'), v => { acc.set('grad', v); if (v) commit(); else paint(); });
+  const paint = () => {
+    const st = sorted().map(s => ({ t: s.t, c: s.c })), a = ang(), c = curStop();
+    strip.style.background = stopsCss(st, 90);
+    marks.innerHTML = '';
+    sorted().forEach(s => marks.append(el('div', { class: 'gmark' + (s.id === selId ? ' sel' : '') + (s.id === FIRST || s.id === LAST ? ' fixed' : ''), style: 'left:' + (s.t * 100) + '%' }, el('i', { class: 'gline' }), el('b', { class: 'gdot', style: 'background:' + s.c }))));
+    selSw.style.background = c.c; tLab.textContent = 't = ' + c.t.toFixed(2);
+    delBtn.disabled = c.id === FIRST || c.id === LAST; delBtn.style.opacity = delBtn.disabled ? .4 : 1;
+    inner.style.background = stopsCss(st, a + 90);
+    const R = 41, rad = a * Math.PI / 180; knob.style.left = (50 + Math.cos(rad) * R) + '%'; knob.style.top = (50 + Math.sin(rad) * R) + '%';
+    if (document.activeElement !== deg) deg.value = String(a);
+    tog.classList.toggle('on', !!acc.get('grad'));
+  };
+  const commit = () => { acc.set('stops', sorted().map(s => ({ t: Math.round(s.t * 1000) / 1000, c: s.c }))); if (!acc.get('grad')) acc.set('grad', true); paint(); };
+  const pickStop = s => openColorPicker(s.c, v => { s.c = v; commit(); }, { onDone: paint });
+  // chạm vào dải: chạm điểm có sẵn = chọn / kéo / (không kéo) mở bảng màu; chạm chỗ trống = thêm điểm mới
+  let drag = null;
+  wrap.addEventListener('pointerdown', e => {
+    e.preventDefault(); wrap.setPointerCapture(e.pointerId);
+    const r = wrap.getBoundingClientRect(), x = e.clientX - r.left, t = clamp(x / r.width, 0, 1);
+    let hit = null, best = 26; for (const s of S) { const d = Math.abs(s.t * r.width - x); if (d <= best) { best = d; hit = s; } }
+    let fresh = false;
+    if (!hit) { hit = { id: ++uidn, t, c: gradColorAt(sorted(), t) }; S.push(hit); fresh = true; }
+    selId = hit.id; drag = { s: hit, x0: x, moved: false, fresh, w: r.width, left: r.left };
+    fresh ? commit() : paint();
+  });
+  wrap.addEventListener('pointermove', e => {
+    if (!drag) return; const x = e.clientX - drag.left;
+    if (!drag.moved && Math.abs(x - drag.x0) < 6) return; drag.moved = true;
+    if (drag.s.id === FIRST || drag.s.id === LAST) return;
+    drag.s.t = clamp(x / drag.w, 0.005, 0.995); commit();
+  });
+  const endDrag = () => { if (!drag) return; const d = drag; drag = null; if (!d.moved && !d.fresh) pickStop(d.s); };
+  wrap.addEventListener('pointerup', endDrag); wrap.addEventListener('pointercancel', () => { drag = null; });
+  // vòng tròn xoay gradient: đè vào thì mờ GUI để thấy màu của shape đổi
+  const setAng = a => { acc.set('gAngle', normDeg(a)); if (!acc.get('grad')) acc.set('grad', true); paint(); };
+  const fromEv = e => {
+    const r = dial.getBoundingClientRect(); let a = Math.atan2(e.clientY - (r.top + r.height / 2), e.clientX - (r.left + r.width / 2)) * 180 / Math.PI;
+    const k = Math.round(a / 45) * 45; if (Math.abs(a - k) < 3) a = k; setAng(a);
+  };
+  dial.addEventListener('pointerdown', e => {
+    e.preventDefault(); dial.setPointerCapture(e.pointerId); m.box.classList.add('fade'); fromEv(e);
+    const mv = ev => fromEv(ev), up = () => { dial.removeEventListener('pointermove', mv); dial.removeEventListener('pointerup', up); dial.removeEventListener('pointercancel', up); m.box.classList.remove('fade'); };
+    dial.addEventListener('pointermove', mv); dial.addEventListener('pointerup', up); dial.addEventListener('pointercancel', up);
+  });
+  deg.addEventListener('change', () => { const x = parseFloat(String(deg.value).replace(',', '.')); if (!isNaN(x)) setAng(x); else paint(); });
+  deg.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); deg.blur(); } });
+  const body = el('div', { class: 'gedit' },
+    el('div', { class: 'gtop' }, el('b', null, 'Gradient'), tog),
+    wrap, el('div', { class: 'gnote' }, 'Chạm vào dải để thêm điểm màu · chạm điểm để đổi màu · kéo để dời (2 đầu cố định)'),
+    el('div', { class: 'gselrow' }, selBtn, tLab, delBtn),
+    el('div', { class: 'gdialrow' }, dial, el('div', { class: 'gdialtxt' }, el('span', { class: 'lab' }, 'Xoay gradient'), el('div', { class: 'zrow' }, deg, el('span', { class: 'zval', style: 'min-width:0' }, '°')), el('div', { class: 'gnote' }, 'Kéo vòng tròn để xoay · đè vào là GUI mờ đi'))));
+  const m = openModal(null, body, [{ label: 'Xong', kind: 'primary' }], { cls: 'sheetmodal gradmodal', sticky: true, onClose: () => { gradEd = null; if (onDone) onDone(); } });
+  gradEd = { close: m.close, sync: () => { if (!acc.valid()) m.close(); } };
+  if (!acc.get('grad')) commit(); else paint();
+}
 /* ---------------- menu chuột phải trên shape + overlay sửa shape ---------------- */
 let ctxMenu = null, shapeEd = null;
 function closeShapeMenu() { if (ctxMenu) { ctxMenu.el.remove(); document.removeEventListener('pointerdown', ctxMenu.off, true); ctxMenu = null; } }
@@ -525,13 +611,17 @@ function openShapeEditor() {
     const s = selShape(); if (!s) return; body.innerHTML = '';
     const row = (...c) => body.append(O.row(...c)), maxR = clamp(Math.round(Math.min(doc.w, doc.h) / 4), 20, 300);
     row(O.seg([['fill', 'Fill'], ['line', 'Line']], () => G('mode'), v => { E('mode', v); render(); }),
-      O.color(() => G('color'), v => E('color', v), 'Màu', { get: () => G('opacity'), set: v => E('opacity', v) }, render));
-    row(O.toggle('Gradient', () => G('grad'), v => { E('grad', v); render(); }));
-    if (G('grad')) row(O.color(() => G('color2'), v => E('color2', v), 'Màu 2', null, render), O.slider('Góc', 0, 360, 5, () => G('gAngle'), v => E('gAngle', v), v => v + '°'));
+      O.color(() => G('color'), v => E('color', v), 'Màu', { get: () => G('opacity'), set: v => E('opacity', v) }, render),
+      gradBtn({ get: G, set: E, valid: (sid => () => { const q = selShape(); return !!q && q.id === sid; })(s.id) }, render));
     row(O.slider('Trong suốt', 5, 100, 1, () => Math.round(G('opacity') * 100), v => E('opacity', v / 100), v => v + '%'));
     if (G('mode') === 'line') { row(O.slider('Độ dày', 1, 150, 1, () => G('width'), v => E('width', v))); row(O.toggle('Nối đầu-cuối', () => G('closed'), v => E('closed', v))); }
     row(O.slider('Bo góc', 0, maxR, 1, () => G('round') || 0, v => E('round', v), v => v ? v + 'px' : 'Tắt'));
     row(O.toggle('Cong mượt', () => G('curve'), v => E('curve', v)));
+    const rin = el('input', { type: 'text', class: 'txt rotin', value: String(G('rot') || 0), placeholder: '0' });
+    const applyRot = () => { const x = parseFloat(String(rin.value).replace(',', '.')); if (isNaN(x)) { rin.value = String(G('rot') || 0); return; } rotateSelTo(x); rin.value = String(G('rot') || 0); };
+    rin.addEventListener('change', applyRot); rin.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); rin.blur(); } });
+    row(el('button', { class: 'btn', onclick: () => { flipSel(true); render(); } }, '⇋ Lật ngang'), el('button', { class: 'btn', onclick: () => { flipSel(false); render(); } }, '⇅ Lật dọc'));
+    body.append(el('div', { class: 'zrow' }, el('span', { class: 'lab' }, 'Xoay (−179 … 180°)'), rin, el('span', { class: 'zval', style: 'min-width:0' }, '°')));
     body.append(el('div', { class: 'zrow' }, el('span', { class: 'lab' }, 'Z-order'),
       el('button', { class: 'btn zb', onclick: () => { zShift(-1); refreshZ(); } }, '−'), zlab, el('button', { class: 'btn zb', onclick: () => { zShift(1); refreshZ(); } }, '+')));
     body.append(el('div', { class: 'note' }, '− ra sau · + ra trước (đổi chỗ với hình kề bên). Hình mới luôn có Z cao nhất.'));

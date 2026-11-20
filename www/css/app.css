@@ -136,6 +136,33 @@ input[type=range].hue{width:100%}input[type=range].hue::-webkit-slider-runnable-
 .ctxmenu{position:fixed;z-index:9000;min-width:210px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:6px;box-shadow:0 10px 32px rgba(0,0,0,.6);display:flex;flex-direction:column;gap:2px}
 .cmi{display:flex;gap:10px;align-items:center;padding:12px 12px;border-radius:10px;text-align:left;font-size:15px}.cmi:active{background:var(--panel2)}.cmi.danger{color:#ff6b6b}
 .cmi .ci svg{width:20px;height:20px}
-.backdrop:has(.shapeed){background:transparent;pointer-events:none}.shapeed{pointer-events:auto;max-height:52vh;box-shadow:0 -6px 30px rgba(0,0,0,.55)}
+.backdrop:has(.shapeed){background:transparent;pointer-events:none}.shapeed{pointer-events:auto;max-height:58vh;box-shadow:0 -6px 30px rgba(0,0,0,.55)}
 .shapeed .mbody{overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y}.sedit{display:flex;flex-direction:column;gap:10px}
 .zrow{display:flex;align-items:center;gap:10px}.zrow .lab{flex:1;font-weight:600}.zrow .zb{width:48px;font-size:22px;padding:6px 0}.zval{min-width:92px;text-align:center;color:var(--dim);font-variant-numeric:tabular-nums}
+
+.rotin{width:96px;text-align:center;flex:none}
+
+/* ---- gradient ---- */
+.gradbtn{padding:6px}.gradbtn .gsw{display:block;width:30px;height:30px;border-radius:8px;border:2px solid rgba(255,255,255,.7)}.gradbtn.on{outline:2px solid var(--accent)}
+.backdrop:has(.gradmodal){background:transparent;pointer-events:none}
+.gradmodal{pointer-events:auto;max-height:62vh;box-shadow:0 -6px 30px rgba(0,0,0,.55);transition:background .15s,border-color .15s,box-shadow .15s}
+.gradmodal .mbody{overflow-y:auto;touch-action:pan-y}.gedit{display:flex;flex-direction:column;gap:12px}
+.gtop{display:flex;justify-content:space-between;align-items:center;font-size:16px}
+.gstripwrap{position:relative;height:84px;touch-action:none;cursor:pointer;user-select:none;-webkit-user-select:none}
+.gstrip{position:absolute;left:0;right:0;top:14px;height:44px;border-radius:10px;border:1px solid var(--line);box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+.gmarks{position:absolute;inset:0;pointer-events:none}
+.gmark{position:absolute;top:2px;height:80px;width:0}
+.gline{position:absolute;left:-2px;top:4px;width:4px;height:56px;background:#fff;border-radius:2px;box-shadow:0 0 0 1.5px rgba(0,0,0,.6)}
+.gdot{position:absolute;left:-12px;top:58px;width:24px;height:24px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 1.5px rgba(0,0,0,.6)}
+.gmark.sel .gline{background:#ffd84d;width:5px;left:-2.5px}.gmark.sel .gdot{width:28px;height:28px;left:-14px;top:56px;border-color:#ffd84d}
+.gmark.fixed .gline{border-radius:0}
+.gnote{color:var(--dim);font-size:12.5px;line-height:1.4}
+.gselrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.gdialrow{display:flex;gap:16px;align-items:center}
+.gdial{position:relative;flex:none;width:124px;height:124px;border-radius:50%;border:3px solid var(--line);background:var(--panel2);touch-action:none;cursor:grab}
+.gdial .gin{position:absolute;inset:18%;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}
+.gknob{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;background:#fff;border:3px solid var(--accent);box-shadow:0 2px 8px rgba(0,0,0,.5);pointer-events:none}
+.gdialtxt{display:flex;flex-direction:column;gap:8px;flex:1;min-width:0}
+.gradmodal.fade{background:transparent;border-color:transparent;box-shadow:none}
+.gradmodal .gtop,.gradmodal .gstripwrap,.gradmodal .gselrow,.gradmodal .mact,.gradmodal .gedit>.gnote,.gradmodal .gdialtxt{transition:opacity .15s}
+.gradmodal.fade .gtop,.gradmodal.fade .gstripwrap,.gradmodal.fade .gselrow,.gradmodal.fade .mact,.gradmodal.fade .gedit>.gnote,.gradmodal.fade .gdialtxt{opacity:.05;pointer-events:none}

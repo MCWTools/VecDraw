@@ -100,7 +100,7 @@ const ic = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 let doc = null, REV = 1, liveStroke = null;
 const view = { s: 1, ox: 0, oy: 0 };
 // style cho shape (vector + shape tools của raster)
-const ST = { mode: 'line', color: '#1a1a1a', grad: false, color2: '#ff5b6b', gAngle: 0, width: 6, opacity: 1, brush: 'pen', closed: true, curve: false, free: 'auto' };
+const ST = { mode: 'line', color: '#1a1a1a', grad: false, color2: '#ff5b6b', stops: null, gAngle: 0, width: 6, opacity: 1, brush: 'pen', closed: true, curve: false, free: 'auto' };
 // style cho raster brush
 const RS = { size: 14, hard: 0.7, opacity: 1, style: 'soft', eSize: 30, eHard: 0.6, eOp: 1, sSize: 36, sStr: 0.55, bSize: 36, bStr: 0.5, tol: 24, contig: true, all: false };
 // vector eraser
@@ -280,11 +280,27 @@ function getPencil(s) {
   }
   c.pc = passes; return passes;
 }
+/* Gradient nhiều điểm: stops = [{t:0..1, c:'#rrggbb'}], t=0 và t=1 luôn có. gAngle = hướng (độ, 0 = trái→phải, chiều kim đồng hồ dương)
+   đường gradient đo theo chính hình (chiếu các điểm lên hướng gradient) nên xoay/lật hình + xoay gAngle theo là màu quay đúng. */
+function shapeStops(s) {
+  const a = s.stops && s.stops.length >= 2 ? s.stops.slice() : [{ t: 0, c: s.color }, { t: 1, c: s.color2 || s.color }];
+  return a.sort((p, q) => p.t - q.t);
+}
+function gradLine(s) {
+  const k = gcache(s); if (k.gl) return k.gl;
+  const a = (s.gAngle || 0) * Math.PI / 180, dx = Math.cos(a), dy = Math.sin(a), pad = s.mode === 'line' ? (s.width || 0) / 2 : 0;
+  let mn = 1e12, mx = -1e12;
+  for (const p of getFlat(s)) { const v = p[0] * dx + p[1] * dy; if (v < mn) mn = v; if (v > mx) mx = v; }
+  if (mn > mx) { mn = -0.5; mx = 0.5; }
+  mn -= pad; mx += pad; if (mx - mn < 1e-6) { mn -= 0.5; mx += 0.5; }
+  const b = getBBox(s), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, cv = cx * dx + cy * dy;
+  return (k.gl = [cx + dx * (mn - cv), cy + dy * (mn - cv), cx + dx * (mx - cv), cy + dy * (mx - cv)]);
+}
 function getPaint(c, s) {
   if (!s.grad) return s.color;
-  const b = getBBox(s), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, r = (hypot(b.x1 - b.x0, b.y1 - b.y0) / 2) || 1, a = (s.gAngle || 0) * Math.PI / 180;
-  const g = c.createLinearGradient(cx - Math.cos(a) * r, cy - Math.sin(a) * r, cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-  g.addColorStop(0, s.color); g.addColorStop(1, s.color2 || s.color); return g;
+  const l = gradLine(s), g = c.createLinearGradient(l[0], l[1], l[2], l[3]);
+  for (const st of shapeStops(s)) g.addColorStop(clamp(st.t, 0, 1), st.c);
+  return g;
 }
 function drawShape(c, s) {
   if (!s.nodes.length) return;
@@ -537,8 +553,8 @@ function exportSVG(d, W, H, bgOverride) {
       for (const s of L.shapes) {
         let paint = s.color;
         if (s.grad) {
-          const b = getBBox(s), cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2, r = (hypot(b.x1 - b.x0, b.y1 - b.y0) / 2) || 1, a = (s.gAngle || 0) * Math.PI / 180, id = 'g' + (gi++);
-          defs += `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${cx - Math.cos(a) * r}" y1="${cy - Math.sin(a) * r}" x2="${cx + Math.cos(a) * r}" y2="${cy + Math.sin(a) * r}"><stop offset="0" stop-color="${s.color}"/><stop offset="1" stop-color="${s.color2}"/></linearGradient>`;
+          const l = gradLine(s), id = 'g' + (gi++);
+          defs += `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${l[0]}" y1="${l[1]}" x2="${l[2]}" y2="${l[3]}">${shapeStops(s).map(st => `<stop offset="${clamp(st.t, 0, 1)}" stop-color="${st.c}"/>`).join('')}</linearGradient>`;
           paint = `url(#${id})`;
         }
         if (s.mode === 'fill') inner += `<path d="${shapeD(s)}" fill="${paint}" opacity="${s.opacity}"/>`;
