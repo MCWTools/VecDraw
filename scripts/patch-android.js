@@ -60,4 +60,29 @@ fs.mkdirSync(javaDir, { recursive: true });
 fs.copyFileSync(path.join(__dirname, 'SafPlugin.java'), path.join(javaDir, 'SafPlugin.java'));
 fs.writeFileSync(path.join(javaDir, 'MainActivity.java'),
   'package com.vecdraw.app;\n\nimport android.os.Bundle;\nimport com.getcapacitor.BridgeActivity;\n\npublic class MainActivity extends BridgeActivity {\n    @Override\n    public void onCreate(Bundle savedInstanceState) {\n        registerPlugin(SafPlugin.class);\n        super.onCreate(savedInstanceState);\n    }\n}\n');
+
+// 5) Ký bằng keystore CỐ ĐỊNH (nếu không, mỗi lần build GitHub tạo chữ ký debug mới -> "package conflict" khi cập nhật)
+//    + versionCode tăng theo số lần chạy workflow để cài đè lên bản cũ được.
+const appGradle = path.join(__dirname, '..', 'android', 'app', 'build.gradle');
+fs.copyFileSync(path.join(__dirname, '..', 'keystore', 'vecdraw.jks'), path.join(__dirname, '..', 'android', 'app', 'vecdraw.jks'));
+let g = fs.readFileSync(appGradle, 'utf8');
+if (!g.includes('vecdraw.jks')) {
+  g = g.replace(/versionCode\s+\d+/, 'versionCode (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()');
+  g = g.replace(/buildTypes\s*\{/, `signingConfigs {
+        debug {
+            storeFile file('vecdraw.jks')
+            storePassword 'vecdraw123'
+            keyAlias 'vecdraw'
+            keyPassword 'vecdraw123'
+        }
+        release {
+            storeFile file('vecdraw.jks')
+            storePassword 'vecdraw123'
+            keyAlias 'vecdraw'
+            keyPassword 'vecdraw123'
+        }
+    }
+    buildTypes {`);
+  fs.writeFileSync(appGradle, g);
+}
 console.log('Android patched.');
