@@ -67,7 +67,7 @@ const appGradle = path.join(__dirname, '..', 'android', 'app', 'build.gradle');
 fs.copyFileSync(path.join(__dirname, '..', 'keystore', 'vecdraw.jks'), path.join(__dirname, '..', 'android', 'app', 'vecdraw.jks'));
 let g = fs.readFileSync(appGradle, 'utf8');
 if (!g.includes('vecdraw.jks')) {
-  g = g.replace(/versionCode\s+\d+/, 'versionCode (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()');
+  g = g.replace(/versionCode\s+\d+/, 'versionCode Integer.parseInt(System.getenv("GITHUB_RUN_NUMBER") ?: "1")');
   g = g.replace(/buildTypes\s*\{/, `signingConfigs {
         debug {
             storeFile file('vecdraw.jks')
