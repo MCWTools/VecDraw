@@ -63,9 +63,9 @@ const O = {
   toggle(label, get, set) {
     const b = el('button', { class: 'pill' + (get() ? ' on' : ''), onclick: () => { const v = !get(); set(v); b.classList.toggle('on', v); } }, label); return b;
   },
-  color(get, set, label, alpha) {
+  color(get, set, label, alpha, onDone) {
     const sw = el('span', { class: 'sw', style: 'background:' + get() });
-    return el('button', { class: 'colorbtn', onclick: () => openColorPicker(get(), v => { set(v); sw.style.background = v; }, alpha ? { alpha } : null) }, sw, label ? el('span', null, label) : null);
+    return el('button', { class: 'colorbtn', onclick: () => openColorPicker(get(), v => { set(v); sw.style.background = v; }, { alpha, onDone }) }, sw, label ? el('span', null, label) : null);
   },
   note(t) { return el('div', { class: 'note' }, t); },
   row(...c) { return el('div', { class: 'orow' }, ...c); }
@@ -76,7 +76,7 @@ const pct = v => Math.round(v * 100) + '%';
 function buildOptions() {
   const P = $('#optPanel'); P.innerHTML = ''; if (!doc) return;
   const s = selShape(), useSel = tool === 'select' && s;
-  const G = k => useSel ? (k === 'curve' ? s.nodes.every(n => !n[2]) : s[k]) : ST[k];
+  const G = k => { if (!useSel) return ST[k]; const cs = selShape() || s; return k === 'curve' ? cs.nodes.every(n => !n[2]) : cs[k]; };
   const S = (k, v) => { if (useSel) editSel(k, v); else { ST[k] = v; requestRender(); } };
   const add = (...c) => P.append(O.row(...c));
   const shapeControls = (isPoly) => {
@@ -305,7 +305,7 @@ function openColorPicker(hex, onChange, opts) {
   drag(at, (x) => { a = x; emit(); });
   // ô màu đang chọn: bấm vào để chuyển sang chế độ chạm đâu lấy màu đó
   sw.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); startPick(m.box.parentNode, c => { [h, s, v] = rgb2hsv(...hex2rgb(c)); emit(); }); });
-  const m = openModal(null, root, null, { cls: 'cp2m', onClose: () => { pushRecent(cur()); cp = null; if (opts.alpha && doc) buildOptions(); } });
+  const m = openModal(null, root, null, { cls: 'cp2m', onClose: () => { pushRecent(cur()); cp = null; if (opts.alpha && doc) buildOptions(); if (opts.onDone) opts.onDone(); } });
   cp = { close: m.close }; paint();
 }
 /* Chế độ hút màu: ẩn overlay, chạm bất kỳ đâu trên hình để lấy màu rồi quay lại overlay */
@@ -500,6 +500,47 @@ async function saveProjectFile() {
   await Native.saveBlob(safeName(doc.name) + '.vdraw', new Blob([JSON.stringify(data)], { type: 'application/json' }));
 }
 
+/* ---------------- menu chuột phải trên shape + overlay sửa shape ---------------- */
+let ctxMenu = null, shapeEd = null;
+function closeShapeMenu() { if (ctxMenu) { ctxMenu.el.remove(); document.removeEventListener('pointerdown', ctxMenu.off, true); ctxMenu = null; } }
+function shapeMenu(cx, cy) {
+  if (!selShape()) return; closeShapeMenu();
+  const mk = (ico, label, fn, danger) => el('button', { class: 'cmi' + (danger ? ' danger' : ''), onclick: () => { closeShapeMenu(); setTimeout(fn, 20); } }, el('span', { class: 'ci', html: ic(ico) }), label);
+  const m = el('div', { class: 'ctxmenu' }, mk('copy', 'Nhân đôi (lên trên)', duplicateSelected), mk('sliders', 'Thêm tuỳ chọn…', openShapeEditor), mk('trash', 'Xoá hình', deleteSelected, true));
+  document.body.append(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = clamp(cx, 8, innerWidth - r.width - 8) + 'px'; m.style.top = clamp(cy, 8, innerHeight - r.height - 8) + 'px';
+  const off = e => { if (!m.contains(e.target)) closeShapeMenu(); };
+  ctxMenu = { el: m, off };
+  setTimeout(() => { if (ctxMenu && ctxMenu.el === m) document.addEventListener('pointerdown', off, true); }, 0);
+}
+function openShapeEditor() {
+  if (!selShape()) return; if (shapeEd) shapeEd.close();
+  const G = k => { const s = selShape(); return s ? (k === 'curve' ? s.nodes.every(n => !n[2]) : s[k]) : undefined; };
+  const E = (k, v) => editSel(k, v);
+  const body = el('div', { class: 'sedit' });
+  const zlab = el('span', { class: 'zval' });
+  const refreshZ = () => { const s = selShape(); if (!s) return; const L = layerById(sel.lid), i = L.shapes.indexOf(s); zlab.textContent = 'Z ' + (s.z == null ? '-' : s.z) + '  ·  ' + (i + 1) + '/' + L.shapes.length; };
+  const render = () => {
+    const s = selShape(); if (!s) return; body.innerHTML = '';
+    const row = (...c) => body.append(O.row(...c)), maxR = clamp(Math.round(Math.min(doc.w, doc.h) / 4), 20, 300);
+    row(O.seg([['fill', 'Fill'], ['line', 'Line']], () => G('mode'), v => { E('mode', v); render(); }),
+      O.color(() => G('color'), v => E('color', v), 'Màu', { get: () => G('opacity'), set: v => E('opacity', v) }, render));
+    row(O.toggle('Gradient', () => G('grad'), v => { E('grad', v); render(); }));
+    if (G('grad')) row(O.color(() => G('color2'), v => E('color2', v), 'Màu 2', null, render), O.slider('Góc', 0, 360, 5, () => G('gAngle'), v => E('gAngle', v), v => v + '°'));
+    row(O.slider('Trong suốt', 5, 100, 1, () => Math.round(G('opacity') * 100), v => E('opacity', v / 100), v => v + '%'));
+    if (G('mode') === 'line') { row(O.slider('Độ dày', 1, 150, 1, () => G('width'), v => E('width', v))); row(O.toggle('Nối đầu-cuối', () => G('closed'), v => E('closed', v))); }
+    row(O.slider('Bo góc', 0, maxR, 1, () => G('round') || 0, v => E('round', v), v => v ? v + 'px' : 'Tắt'));
+    row(O.toggle('Cong mượt', () => G('curve'), v => E('curve', v)));
+    body.append(el('div', { class: 'zrow' }, el('span', { class: 'lab' }, 'Z-order'),
+      el('button', { class: 'btn zb', onclick: () => { zShift(-1); refreshZ(); } }, '−'), zlab, el('button', { class: 'btn zb', onclick: () => { zShift(1); refreshZ(); } }, '+')));
+    body.append(el('div', { class: 'note' }, '− ra sau · + ra trước (đổi chỗ với hình kề bên). Hình mới luôn có Z cao nhất.'));
+    refreshZ();
+  };
+  const m = openModal('Sửa hình', body, [{ label: 'Xong', kind: 'primary' }], { cls: 'sheetmodal shapeed', sticky: true, onClose: () => { shapeEd = null; } });
+  shapeEd = { close: m.close, render, sync: () => { if (!selShape()) m.close(); else render(); } };
+  render();
+}
 /* ---------------- cài đặt app (main menu) ---------------- */
 function chkRow(label, desc, get, set) {
   const cb = el('input', { type: 'checkbox' }); cb.checked = !!get();

@@ -119,8 +119,10 @@ function newLayer(d, type, name) {
   return l;
 }
 function nextLayerName(d) { let n = d.layers.length + 1; const names = new Set(d.layers.map(l => l.name)); while (names.has('Layer ' + n)) n++; return 'Layer ' + n; }
+/* z-order: mọi shape có z tăng dần; doc.zmax = z cao nhất đã cấp (shape mới luôn cao hơn) */
+const nextZ = () => (doc.zmax = (doc.zmax || 0) + 1);
 function newDoc(o) {
-  const d = { id: uid(), name: o.name || 'Untitled', type: o.type, w: o.w, h: o.h, bg: o.bg === undefined ? '#ffffff' : o.bg, layers: [], active: null, created: Date.now() };
+  const d = { id: uid(), name: o.name || 'Untitled', type: o.type, w: o.w, h: o.h, bg: o.bg === undefined ? '#ffffff' : o.bg, layers: [], active: null, created: Date.now(), zmax: 0 };
   const L = newLayer(d, d.type === 'vector' ? 'vec' : 'ras', 'Layer 1');
   d.layers.push(L); d.active = L.id;
   return d;
@@ -599,7 +601,7 @@ function mergeDown(id) {
   withHist(() => {
     if (up.type === 'vec' && lo.type === 'vec') {
       const k = up.opacity; if (up.blend !== 'source-over' || up.blur) toast('Blend/blur của layer trên bị bỏ khi gộp vector');
-      lo.shapes = lo.shapes.concat(up.shapes.map(s => k < 1 ? Object.assign({}, s, { opacity: s.opacity * k }) : s));
+      lo.shapes = lo.shapes.concat(up.shapes.map(s => k < 1 ? Object.assign({}, s, { opacity: s.opacity * k }) : s)).map(s => Object.assign({}, s, { z: nextZ() }));
       touch(lo);
     } else {
       const sc = doc.type === 'vector' ? Math.min(4, Math.max(1, 2048 / Math.max(doc.w, doc.h))) : 1;
@@ -688,7 +690,7 @@ async function serLayers(list) {
 }
 async function serializeDoc(d) {
   if (d.mapping && d === doc && typeof commitTab === 'function') commitTab();
-  const o = { v: 1, id: d.id, name: d.name, type: d.type, w: d.w, h: d.h, bg: d.bg, active: d.active, layers: d.mapping ? [] : await serLayers(d.layers), created: d.created, updated: Date.now() };
+  const o = { v: 1, id: d.id, name: d.name, type: d.type, w: d.w, h: d.h, bg: d.bg, active: d.active, layers: d.mapping ? [] : await serLayers(d.layers), created: d.created, updated: Date.now(), zmax: d.zmax || 0 };
   if (d.mapping) {
     const m = d.mapping, sets = {};
     for (const k in m.sets) sets[k] = { active: m.sets[k].active, layers: await serLayers(m.sets[k].layers) };
@@ -701,7 +703,8 @@ async function desLayers(arr, d) {
   for (const s of arr) {
     const l = { id: s.id || uid(), name: s.name, type: s.type, visible: s.visible !== false, locked: !!s.locked, opacity: s.opacity == null ? 1 : s.opacity, blend: s.blend || 'source-over', blur: s.blur || 0, rev: ++REV };
     if (s.trace) l.trace = true;
-    if (s.type === 'vec') { l.shapes = (s.shapes || []).map(sh => Object.assign({ id: uid(), closed: false, mode: 'line', color: '#000000', grad: false, color2: '#ffffff', gAngle: 0, width: 4, opacity: 1, brush: 'pen', seed: 1 }, sh)); }
+    if (s.type === 'vec') { l.shapes = (s.shapes || []).map(sh => Object.assign({ id: uid(), closed: false, mode: 'line', color: '#000000', grad: false, color2: '#ffffff', gAngle: 0, width: 4, opacity: 1, brush: 'pen', seed: 1 }, sh));
+      l.shapes.forEach(sh => { if (sh.z == null) sh.z = (d.zmax = (d.zmax || 0) + 1); else if (sh.z > (d.zmax || 0)) d.zmax = sh.z; }); }
     else if (s.type === 'img') { l.src = s.src; l.img = await loadImage(s.src); l.iw = s.iw || l.img.naturalWidth; l.ih = s.ih || l.img.naturalHeight; l.corners = s.corners; l.smooth = s.smooth !== false; }
     else { l.canvas = mkCanvas(d.w, d.h); if (s.png) { const im = await loadImage(s.png); l.canvas.getContext('2d').drawImage(im, 0, 0); } l._png = s.png; l._pngRev = l.rev; }
     out.push(l);
@@ -709,7 +712,7 @@ async function desLayers(arr, d) {
   return out;
 }
 async function deserializeDoc(o) {
-  const d = { id: o.id || uid(), name: o.name || 'Untitled', type: o.type, w: o.w, h: o.h, bg: o.bg === undefined ? '#ffffff' : o.bg, layers: [], active: o.active, created: o.created || Date.now() };
+  const d = { id: o.id || uid(), name: o.name || 'Untitled', type: o.type, w: o.w, h: o.h, bg: o.bg === undefined ? '#ffffff' : o.bg, layers: [], active: o.active, created: o.created || Date.now(), zmax: o.zmax || 0 };
   if (o.mapping) {
     const m = o.mapping; d.mapping = { sourceId: m.sourceId, layout: m.layout || '', cur: m.cur || 'normal', ref: m.ref || { visible: true, opacity: 1 }, bgs: m.bgs || {}, sets: {}, refStamp: 0 };
     for (const k in (m.sets || {})) d.mapping.sets[k] = { active: m.sets[k].active, layers: await desLayers(m.sets[k].layers, d) };

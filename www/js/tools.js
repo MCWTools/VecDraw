@@ -111,7 +111,7 @@ function commitShape(s) {
   if (doc.type === 'vector') {
     withHist(() => {
       if (L.type !== 'vec') { const N = newLayer(doc, 'vec', nextLayerName(doc)); insertLayerAbove(N); L = N; toast('Tạo layer vector mới để vẽ'); }
-      L.shapes = L.shapes.concat([s]); touch(L);
+      s.z = nextZ(); L.shapes = L.shapes.concat([s]); touch(L);
     });
   } else {
     if (L.type === 'img') { withHist(() => rasterizeInPlace(L)); toast('Đã rasterize layer ảnh để vẽ lên'); }
@@ -210,7 +210,7 @@ function pickAt(p) {
   }
   return null;
 }
-function selectShape(L, s) { sel = { lid: L.id, sid: s.id, mode: sel ? sel.mode : 'nodes', ni: -1 }; doc.active = L.id; uiRefresh(true); requestRender(); }
+function selectShape(L, s) { sel = { lid: L.id, sid: s.id, mode: sel ? sel.mode : 'nodes', ni: -1 }; doc.active = L.id; uiRefresh(true); requestRender(); if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); }
 function handlePts(cs) {
   const S = cs.map(q => toScr(q[0], q[1])), mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const m = [mid(S[0], S[1]), mid(S[1], S[2]), mid(S[2], S[3]), mid(S[3], S[0])];
@@ -275,9 +275,10 @@ function beginXf(t, key, p) {
   xf = { t: Object.assign({}, t, { shape: shape || t.shape }), key, p0: p, s0: [p.sx, p.sy], cs0: t.corners.map(c => c.slice()), before, moved: false, orig: shape ? shape.nodes.map(n => n.slice()) : null };
 }
 function hitNode(s, p) { let bi = -1, bd = 17; s.nodes.forEach((n, i) => { const q = toScr(n[0], n[1]), d = hypot(q[0] - p.sx, q[1] - p.sy); if (d < bd) { bd = d; bi = i; } }); return bi; }
+const lp = { t: 0, fired: false };
 const selectTool = {
-  down(p) {
-    xf = null;
+  down(p, e) {
+    xf = null; clearTimeout(lp.t); lp.fired = false;
     const t = currentTarget();
     if (t) {
       if (t.kind === 'shape' && sel.mode === 'nodes') {
@@ -294,15 +295,19 @@ const selectTool = {
     }
     const hit = pickAt(p);
     if (hit) {
-      if (hit.s) { selectShape(hit.L, hit.s); beginXf(currentTarget(), 'move', p); }
+      if (hit.s) {
+        selectShape(hit.L, hit.s); beginXf(currentTarget(), 'move', p);
+        const cx = e ? e.clientX : 0, cy = e ? e.clientY : 0;
+        lp.t = setTimeout(() => { if (xf && !xf.moved) { xf = null; lp.fired = true; shapeMenu(cx, cy); } }, 480);
+      }
       else { sel = null; setActive(hit.L.id); beginXf(currentTarget(), 'move', p); }
-    } else if (sel) { sel = null; uiRefresh(true); }
+    } else if (sel) { sel = null; uiRefresh(true); if (typeof shapeEd !== 'undefined' && shapeEd) shapeEd.sync(); }
     requestRender();
   },
   move(p) {
     if (!xf) return;
     if (!xf.moved && hypot(p.sx - xf.s0[0], p.sy - xf.s0[1]) < 4) return;
-    xf.moved = true;
+    xf.moved = true; clearTimeout(lp.t);
     if (xf.node) { const n = xf.t.shape.nodes[xf.i]; n[0] = xf.n0[0] + (p.x - xf.p0.x); n[1] = xf.n0[1] + (p.y - xf.p0.y); invalidate(xf.t.shape); touch(xf.t.layer); requestRender(); return; }
     const t = xf.t, warp = t.kind === 'img' && XF.warp, cs = xformDrag(xf.key, xf.cs0, xf.p0, p, XF.lock, warp);
     if (t.kind === 'img') { t.layer.corners = cs; touch(t.layer); }
@@ -310,6 +315,7 @@ const selectTool = {
     requestRender();
   },
   up(p) {
+    clearTimeout(lp.t); if (lp.fired) { lp.fired = false; xf = null; requestRender(); return; }
     const moved = xf && xf.moved;
     if (xf && moved) pushHist({ kind: 'doc', before: xf.before, after: snap() });
     xf = null;
@@ -320,7 +326,7 @@ const selectTool = {
     }
     uiRefresh(); requestRender();
   },
-  cancel() { if (xf && xf.moved) { restoreSnap(xf.before); } xf = null; },
+  cancel() { clearTimeout(lp.t); if (xf && xf.moved) { restoreSnap(xf.before); } xf = null; },
   overlay(c) {
     const t = currentTarget(); if (!t) return;
     c.save();
@@ -377,13 +383,24 @@ function deleteSelected() {
 }
 function duplicateSelected() {
   const s = selShape(); if (!s) return;
-  const L = layerById(sel.lid), c = cloneShape(s); c.id = uid(); c.nodes.forEach(n => { n[0] += 14; n[1] += 14; });
+  const L = layerById(sel.lid), c = cloneShape(s); c.id = uid(); c.z = nextZ(); c.nodes.forEach(n => { n[0] += 14; n[1] += 14; });
   withHist(() => { L.shapes = L.shapes.concat([c]); touch(L); }); sel.sid = c.id; uiRefresh(true); requestRender();
 }
+function zShift(dir) {   // dir>0: ra trước (+), dir<0: ra sau (−) — đổi z với shape kề
+  const s = selShape(); if (!s) return; const L = layerById(sel.lid), a = L.shapes.slice(), i = a.indexOf(s), j = i + dir;
+  if (j < 0 || j >= a.length) { toast(dir > 0 ? 'Đã ở trên cùng' : 'Đã ở dưới cùng', 900); return; }
+  withHist(() => { const p = a[i], q = a[j]; a[i] = Object.assign({}, q, { z: p.z }); a[j] = Object.assign({}, p, { z: q.z }); L.shapes = a; touch(L); });
+  requestRender();
+}
 function reorderSelected(dir) {
-  const s = selShape(); if (!s) return; const L = layerById(sel.lid), a = L.shapes.slice(), i = a.indexOf(s);
-  const j = dir === 'front' ? a.length - 1 : dir === 'back' ? 0 : clamp(i + (dir === 'up' ? 1 : -1), 0, a.length - 1);
-  withHist(() => { a.splice(i, 1); a.splice(j, 0, s); L.shapes = a; touch(L); });
+  const s = selShape(); if (!s) return;
+  if (dir === 'up' || dir === 'down') { zShift(dir === 'up' ? 1 : -1); return; }
+  const L = layerById(sel.lid), rest = L.shapes.filter(x => x !== s);
+  withHist(() => {
+    const z = dir === 'front' ? nextZ() : (rest.length ? Math.min(...rest.map(x => x.z)) - 1 : s.z), n = Object.assign({}, s, { z });
+    L.shapes = dir === 'front' ? rest.concat([n]) : [n].concat(rest); touch(L);
+  });
+  requestRender();
 }
 function flipSel(h) {
   const s = selShape();
@@ -660,3 +677,10 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { if (e.key === ' ') keys.space = false; });
 function toolAvailable(id) { return TOOL_DEFS[doc.type].some(t => t.id === id); }
+
+/* chuột phải trên shape (chế độ Chọn) -> menu; giữ lâu cảm ứng xử lý ở selectTool */
+cv.addEventListener('contextmenu', e => {
+  e.preventDefault(); if (!doc || tool !== 'select' || doc.type !== 'vector' || ctxMenu) return;
+  const hit = pickAt(toDoc(e.clientX, e.clientY));
+  if (hit && hit.s) { xf = null; selectShape(hit.L, hit.s); shapeMenu(e.clientX, e.clientY); }
+});
